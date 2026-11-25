@@ -524,6 +524,19 @@ class MonitorTab(QWidget):
                 f"⚠ Motor IA ALPR pausado ({status.mode}): {status.message}"
             )
             self.license_banner.setVisible(True)
+            # Reflete o bloqueio também no Card Gigante de Status para ficar inconfundível
+            self._blink_timer.stop()
+            self.status_card.setStyleSheet(
+                "QFrame#GiantStatusCard { background-color: #450A12; border: 2px solid #EF4444; border-radius: 14px; }"
+            )
+            self.lbl_status_kicker.setText("LICENCIAMENTO NEXUSISTEMAS • LEITURA IA PAUSADA")
+            self.lbl_status_kicker.setStyleSheet(
+                "color: #FCA5A5; font-size: 11px; font-weight: 700; letter-spacing: 0.8px; background: transparent;"
+            )
+            self.lbl_status_headline.setText("LICENÇA BLOQUEADA / PENDENTE")
+            self.lbl_status_details.setText(status.message)
+            self.lbl_plate_badge.setText("BLOQUEADO")
+            self.btn_quick_register.setVisible(False)
         self._refresh_alpr_pill()
 
     def _on_alpr_metrics(self, elapsed_ms: float) -> None:

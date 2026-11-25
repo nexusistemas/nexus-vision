@@ -181,8 +181,15 @@ class LicenseTab(QWidget):
         self.btn_activate.setMinimumHeight(42)
         self.btn_activate.clicked.connect(self._trigger_activation)
 
+        self.btn_sync_now = QPushButton("↻  Sincronizar")
+        self.btn_sync_now.setProperty("variant", "primary")
+        self.btn_sync_now.setMinimumHeight(42)
+        self.btn_sync_now.setToolTip("Consulta agora o status e validade atualizados no painel /admin")
+        self.btn_sync_now.clicked.connect(self._trigger_activation)
+
         key_row.addWidget(self.in_license_key, 1)
         key_row.addWidget(self.btn_activate)
+        key_row.addWidget(self.btn_sync_now)
 
         # Metadados da licença ativa
         lic_grid = QGridLayout()
@@ -368,20 +375,34 @@ class LicenseTab(QWidget):
             return
 
         self.btn_activate.setEnabled(False)
+        self.btn_sync_now.setEnabled(False)
         self.btn_activate.setText("⏳  Validando...")
         self.heartbeat_worker.trigger_validation(key)
 
     def apply_license_status(self, status: LicenseStatus) -> None:
         self.btn_activate.setEnabled(True)
+        self.btn_sync_now.setEnabled(True)
         self.btn_activate.setText("🔑  Ativar / Validar Online")
 
         if status.code and not self.in_license_key.text().strip():
             self.in_license_key.setText(status.code)
 
-        self.lbl_status_message.setText(status.message)
+        sync_suffix = (
+            f"  (Última verificação online: {status.last_online_check})"
+            if status.last_online_check
+            else ""
+        )
+        self.lbl_status_message.setText(f"{status.message}{sync_suffix}")
         self.lbl_val_condo.setText(status.condominio_nome or "—")
         self.lbl_val_plano.setText(status.plano or "—")
-        self.lbl_val_expira.setText((status.validade_ate or "—")[:10] if status.validade_ate else "—")
+
+        # Formata data YYYY-MM-DD -> DD/MM/YYYY
+        val_display = "—"
+        if status.validade_ate:
+            raw_d = status.validade_ate[:10]
+            parts = raw_d.split("-")
+            val_display = f"{parts[2]}/{parts[1]}/{parts[0]}" if len(parts) == 3 else raw_d
+        self.lbl_val_expira.setText(val_display)
         self.lbl_val_grace.setText(
             f"Até {status.offline_grace_until}" if status.offline_grace_until else "72h após validação online"
         )

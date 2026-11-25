@@ -39,7 +39,7 @@ from supabase_config import (
 LICENSE_KEY_REGEX = re.compile(r"^NV-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$")
 OFFLINE_GRACE_SECONDS: int = 72 * 3600  # 72 horas de contingência offline
 CLOCK_ROLLBACK_TOLERANCE_SEC: int = 120  # 2 min de folga para ajustes NTP
-HEARTBEAT_INTERVAL_SECONDS: int = 30 * 60  # 30 minutos
+HEARTBEAT_INTERVAL_SECONDS: int = 60  # Sincronização automática a cada 1 minuto (bloqueio/renovação quase em tempo real)
 
 _APP_INTEGRITY_PEPPER = b"NEXUS_VISION_ANTI_TAMPER_2026::NEXUSISTEMAS_V1"
 
