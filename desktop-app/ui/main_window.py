@@ -250,7 +250,7 @@ class MainWindow(QMainWindow):
         self._update_vehicle_counter()
 
     def _connect_signals(self) -> None:
-        self.tab_monitor.access_logged.connect(self.tab_history.refresh_history)
+        self.tab_monitor.access_logged.connect(self._on_access_logged)
         self.tab_monitor.capture_state_changed.connect(self._on_capture_state_changed)
         self.tab_monitor.alpr_status_changed.connect(self._on_alpr_status_changed)
         self.tab_monitor.quick_register_requested.connect(self._on_quick_register_requested)
@@ -261,6 +261,11 @@ class MainWindow(QMainWindow):
         self.tab_vehicles.cloud_backup_requested.connect(lambda: self._run_cloud_operation("backup", silent=False))
         self.tab_vehicles.cloud_restore_requested.connect(self._confirm_and_restore_cloud)
         self.license_heartbeat.license_updated.connect(self._on_license_updated)
+
+    def _on_access_logged(self) -> None:
+        # Só repopula a tabela de Histórico em tempo real se a Aba 3 estiver aberta
+        if self.stack.currentIndex() == 2:
+            self.tab_history.refresh_history()
 
     def _switch_tab(self, index: int) -> None:
         self.stack.setCurrentIndex(index)

@@ -526,12 +526,10 @@ class ALPREngineWorker(QThread):
             if self._is_in_cooldown(plate, now):
                 continue
 
-            # Confirma a leitura e registra cooldown
+            # Confirma a leitura e registra cooldown (sem salvar foto em disco para performance máxima)
             self._cooldown_map[plate] = now
             self._prune_expired_cooldowns(now)
 
-            x1, y1, x2, y2 = bbox
-            crop = frame_bgr[y1:y2, x1:x2].copy() if (x2 > x1 and y2 > y1) else None
             self.plate_confirmed.emit(
                 {
                     "plate": plate,
@@ -542,8 +540,6 @@ class ALPREngineWorker(QThread):
                     "ocr_confidence": ocr_conf,
                     "votes": votes,
                     "bbox": bbox,
-                    "frame_bgr": frame_bgr.copy(),
-                    "crop_bgr": crop,
                 }
             )
 

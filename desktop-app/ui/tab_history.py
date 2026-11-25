@@ -1,16 +1,15 @@
 """
-Aba 3 — Histórico de Acessos do Nexus Vision.
-Filtros por intervalo de datas, placa/nome e status + visualização da miniatura capturada.
+Aba 3 — Histórico de Acessos Ultra-Rápido do Nexus Vision (Apenas Registros).
+Sem gravação de imagens em disco para abertura instantânea e zero peso no HD/SSD;
+mantém automaticamente as últimas 24 horas de passagens com filtros por data, placa e status.
 """
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from PySide6.QtCore import QDate, Qt
-from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -33,13 +32,12 @@ from config import (
     ACCESS_STATUS_LIBERADO_MORADOR,
     ACCESS_STATUS_LIBERADO_VISITANTE,
     ACCESS_STATUS_NAO_CADASTRADO,
-    CAPTURES_DIR,
 )
 from core.database import DatabaseManager, format_plate_display
 
 
 STATUS_DISPLAY = {
-    ACCESS_STATUS_LIBERADO_MORADOR: ("MORADOR LIBERADO", "#34D399"),
+    ACCESS_STATUS_LIBERADO_MORADOR: ("MORADOR AUTORIZADO", "#34D399"),
     ACCESS_STATUS_LIBERADO_VISITANTE: ("VISITANTE AUTORIZADO", "#38BDF8"),
     ACCESS_STATUS_NAO_CADASTRADO: ("NÃO CADASTRADO", "#FBBF24"),
     ACCESS_STATUS_BLOQUEADO: ("BLOQUEADO", "#F87171"),
@@ -48,19 +46,20 @@ STATUS_DISPLAY = {
 
 
 class HistoryTab(QWidget):
-    """Aba de consulta ao histórico local de passagens com preview da imagem."""
+    """Aba leve e instantânea de consulta ao histórico de passagens (últimas 24h)."""
 
     def __init__(self, db: DatabaseManager, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.db = db
-        self._current_image_path: Optional[str] = None
+        self._bold_font = QFont()
+        self._bold_font.setBold(True)
         self._build_ui()
         self.refresh_history()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 16)
-        root.setSpacing(14)
+        root.setSpacing(12)
 
         # --- Barra de Filtros ---
         filter_card = QFrame()
@@ -74,7 +73,7 @@ class HistoryTab(QWidget):
         self.dt_from = QDateEdit()
         self.dt_from.setCalendarPopup(True)
         self.dt_from.setDisplayFormat("dd/MM/yyyy")
-        self.dt_from.setDate(QDate.currentDate().addDays(-7))
+        self.dt_from.setDate(QDate.currentDate().addDays(-1))
         self.dt_from.dateChanged.connect(self.refresh_history)
 
         lbl_to = QLabel("Até:")
@@ -86,7 +85,7 @@ class HistoryTab(QWidget):
         self.dt_to.dateChanged.connect(self.refresh_history)
 
         self.in_plate_search = QLineEdit()
-        self.in_plate_search.setPlaceholderText("🔍  Filtrar por placa, morador ou unidade...")
+        self.in_plate_search.setPlaceholderText("🔍  Filtrar por placa, morador ou casa/unidade...")
         self.in_plate_search.textChanged.connect(self.refresh_history)
 
         self.cmb_status = QComboBox()
@@ -99,6 +98,9 @@ class HistoryTab(QWidget):
         btn_refresh.setProperty("variant", "primary")
         btn_refresh.clicked.connect(self.refresh_history)
 
+        self.lbl_count = QLabel("0 registros")
+        self.lbl_count.setProperty("muted", "true")
+
         fl.addWidget(lbl_from)
         fl.addWidget(self.dt_from)
         fl.addWidget(lbl_to)
@@ -106,15 +108,13 @@ class HistoryTab(QWidget):
         fl.addWidget(self.in_plate_search, 1)
         fl.addWidget(self.cmb_status)
         fl.addWidget(btn_refresh)
+        fl.addWidget(self.lbl_count)
         root.addWidget(filter_card)
 
-        # --- Split: Tabela + Painel de Miniatura ---
-        body = QHBoxLayout()
-        body.setSpacing(14)
-
-        self.table = QTableWidget(0, 6)
+        # --- Tabela 100% largura (larguras fixas/stretch -> abertura instantânea em <5ms!) ---
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["Data / Hora", "Placa", "Status", "Responsável", "Unidade", "Câmera"]
+            ["Data / Hora", "Placa", "Status", "Responsável", "Casa / Unidade", "Veículo / Cor", "Câmera"]
         )
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -124,52 +124,27 @@ class HistoryTab(QWidget):
         self.table.verticalHeader().setDefaultSectionSize(34)
 
         hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.itemSelectionChanged.connect(self._on_row_selected)
+        hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
 
-        # Painel Lateral de Miniatura Capturada
-        preview_card = QFrame()
-        preview_card.setProperty("card", "true")
-        preview_card.setFixedWidth(360)
-        pv = QVBoxLayout(preview_card)
-        pv.setContentsMargins(14, 14, 14, 14)
-        pv.setSpacing(10)
+        self.table.setColumnWidth(0, 155)
+        self.table.setColumnWidth(1, 105)
+        self.table.setColumnWidth(2, 185)
+        self.table.setColumnWidth(4, 150)
+        self.table.setColumnWidth(6, 145)
 
-        lbl_pv_title = QLabel("MINIATURA CAPTURADA")
-        lbl_pv_title.setProperty("sectionTitle", "true")
-        pv.addWidget(lbl_pv_title)
+        root.addWidget(self.table, 1)
 
-        self.lbl_thumb = QLabel("Selecione um registro na tabela para visualizar a captura.")
-        self.lbl_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_thumb.setWordWrap(True)
-        self.lbl_thumb.setFixedHeight(230)
-        self.lbl_thumb.setStyleSheet(
-            "background-color: #070D19; border: 1px dashed #26354D; "
-            "border-radius: 10px; color: #64748B; padding: 14px;"
+        lbl_note = QLabel(
+            "⚡ Modo leve ativo: apenas registros de texto são armazenados (sem fotos em disco) • Limpeza automática a cada 24h."
         )
-        pv.addWidget(self.lbl_thumb)
-
-        self.lbl_meta = QLabel("Nenhum evento selecionado.")
-        self.lbl_meta.setWordWrap(True)
-        self.lbl_meta.setStyleSheet(
-            "background-color: #0B1324; border: 1px solid #1E293B; border-radius: 8px; "
-            "color: #CBD5E1; padding: 12px; font-size: 12px;"
-        )
-        pv.addWidget(self.lbl_meta)
-        pv.addStretch()
-
-        btn_open_folder = QPushButton("📂  Abrir Pasta de Capturas")
-        btn_open_folder.clicked.connect(self._open_captures_folder)
-        pv.addWidget(btn_open_folder)
-
-        body.addWidget(self.table, 1)
-        body.addWidget(preview_card)
-        root.addLayout(body, 1)
+        lbl_note.setStyleSheet("color: #64748B; font-size: 11px; padding-left: 4px; background: transparent;")
+        root.addWidget(lbl_note)
 
     def refresh_history(self) -> None:
         date_from = self.dt_from.date().toString("yyyy-MM-dd")
@@ -185,80 +160,36 @@ class HistoryTab(QWidget):
             limit=300,
         )
 
-        self.table.setRowCount(len(records))
-        for r_idx, rec in enumerate(records):
-            it_dt = QTableWidgetItem(rec.get("data_hora") or "")
-            it_dt.setData(Qt.ItemDataRole.UserRole, rec)
-
-            it_plate = QTableWidgetItem(format_plate_display(rec.get("placa", "")))
-            f = it_plate.font()
-            f.setBold(True)
-            it_plate.setFont(f)
-
-            status_code = rec.get("status_acesso", ACCESS_STATUS_NAO_CADASTRADO)
-            label, color_hex = STATUS_DISPLAY.get(status_code, (status_code, "#E2E8F0"))
-            it_status = QTableWidgetItem(label)
-            it_status.setForeground(QColor(color_hex))
-            fs = it_status.font()
-            fs.setBold(True)
-            it_status.setFont(fs)
-
-            it_name = QTableWidgetItem(rec.get("nome_responsavel") or "Não cadastrado")
-            it_unit = QTableWidgetItem(rec.get("unidade_bloco") or "—")
-            it_cam = QTableWidgetItem(rec.get("camera_nome") or "—")
-
-            for c_idx, item in enumerate(
-                (it_dt, it_plate, it_status, it_name, it_unit, it_cam)
-            ):
-                self.table.setItem(r_idx, c_idx, item)
-
-    def _on_row_selected(self) -> None:
-        rows = self.table.selectionModel().selectedRows()
-        if not rows:
-            return
-        item = self.table.item(rows[0].row(), 0)
-        if not item:
-            return
-        rec: dict[str, Any] = item.data(Qt.ItemDataRole.UserRole)
-        if not isinstance(rec, dict):
-            return
-
-        status_code = rec.get("status_acesso", "")
-        status_label = STATUS_DISPLAY.get(status_code, (status_code, "#E2E8F0"))[0]
-        self.lbl_meta.setText(
-            f"Placa: {format_plate_display(rec.get('placa', ''))}\n"
-            f"Status: {status_label}\n"
-            f"Responsável: {rec.get('nome_responsavel') or 'Não cadastrado'}\n"
-            f"Unidade: {rec.get('unidade_bloco') or '—'}\n"
-            f"Veículo: {rec.get('modelo_cor') or '—'}\n"
-            f"Câmera: {rec.get('camera_nome') or '—'}\n"
-            f"Data/Hora: {rec.get('data_hora') or '—'}"
-        )
-
-        img_path = rec.get("imagem_path")
-        self._current_image_path = img_path
-        if img_path and Path(img_path).exists():
-            pix = QPixmap(img_path)
-            if not pix.isNull():
-                scaled = pix.scaled(
-                    self.lbl_thumb.width() - 8,
-                    self.lbl_thumb.height() - 8,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                self.lbl_thumb.setPixmap(scaled)
-                return
-
-        self.lbl_thumb.setPixmap(QPixmap())
-        self.lbl_thumb.setText(
-            "Sem miniatura salva para este evento.\n\n"
-            "Dica: inicie a captura da câmera na Aba 1 antes de simular leituras "
-            "para gravar o frame real automaticamente."
-        )
-
-    def _open_captures_folder(self) -> None:
-        CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+        # Desabilita repintura durante o preenchimento -> abre instantaneamente sem travar
+        self.table.setUpdatesEnabled(False)
         try:
-            os.startfile(str(CAPTURES_DIR))  # type: ignore[attr-defined]
-        except Exception:
-            pass
+            self.table.setRowCount(len(records))
+            for r_idx, rec in enumerate(records):
+                it_dt = QTableWidgetItem(rec.get("data_hora") or "")
+
+                it_plate = QTableWidgetItem(format_plate_display(rec.get("placa", "")))
+                it_plate.setFont(self._bold_font)
+                it_plate.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+
+                status_code = rec.get("status_acesso", ACCESS_STATUS_NAO_CADASTRADO)
+                label, color_hex = STATUS_DISPLAY.get(status_code, (status_code, "#E2E8F0"))
+                it_status = QTableWidgetItem(label)
+                it_status.setForeground(QColor(color_hex))
+                it_status.setFont(self._bold_font)
+
+                it_name = QTableWidgetItem(rec.get("nome_responsavel") or "Não cadastrado")
+                it_unit = QTableWidgetItem(rec.get("unidade_bloco") or "—")
+                it_car = QTableWidgetItem(rec.get("modelo_cor") or "—")
+                it_cam = QTableWidgetItem(rec.get("camera_nome") or "—")
+
+                self.table.setItem(r_idx, 0, it_dt)
+                self.table.setItem(r_idx, 1, it_plate)
+                self.table.setItem(r_idx, 2, it_status)
+                self.table.setItem(r_idx, 3, it_name)
+                self.table.setItem(r_idx, 4, it_unit)
+                self.table.setItem(r_idx, 5, it_car)
+                self.table.setItem(r_idx, 6, it_cam)
+        finally:
+            self.table.setUpdatesEnabled(True)
+
+        self.lbl_count.setText(f"{len(records)} registro(s)")

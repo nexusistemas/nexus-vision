@@ -46,7 +46,6 @@ from core.alpr_engine import (
     DEFAULT_QUALITY_PRESET,
     QUALITY_PRESETS,
     ALPREngineWorker,
-    save_alpr_capture,
 )
 from core.database import DatabaseManager, format_plate_display, normalize_plate
 from core.license_manager import LicenseStatus
@@ -623,8 +622,6 @@ class MonitorTab(QWidget):
         plate = payload["plate"]
         confidence = float(payload.get("confidence", 0.0))
         pattern = payload.get("pattern", "")
-        bbox = payload.get("bbox")
-        frame_bgr = payload.get("frame_bgr")
 
         status, vehicle = self.db.evaluate_plate_access(plate)
         theme = STATUS_THEME.get(status, STATUS_THEME[ACCESS_STATUS_NAO_CADASTRADO])
@@ -632,19 +629,13 @@ class MonitorTab(QWidget):
         if self._worker:
             self._worker.set_plate_color_hint(plate, theme["bgr"])
 
-        img_path = (
-            save_alpr_capture(frame_bgr, plate, bbox=bbox, box_color_bgr=theme["bgr"])
-            if frame_bgr is not None
-            else (self._worker.save_current_snapshot(plate) if self._worker else None)
-        )
-
         camera_name = self._active_roi["nome"] if self._active_roi else "Câmera Principal"
         record = self.db.log_access(
             placa=plate,
             status_acesso=status,
             camera_nome=camera_name,
             veiculo_id=vehicle["id"] if vehicle else None,
-            imagem_path=img_path,
+            imagem_path=None,
         )
         record["_alpr_meta"] = f"IA {int(round(confidence * 100))}% • {pattern}"
 
