@@ -1,0 +1,89 @@
+# ==============================================================================
+# Nexus Vision (NexuSistemas Tecnologia) — .gitignore
+# SEGURANÇA CRÍTICA: Nunca versionar credenciais, chaves ou bancos locais.
+# ==============================================================================
+
+# Secrets & Environment
+.env
+.env.*
+.env.deploy
+.env.local
+.env.production
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*.secret
+secrets/
+
+# Local SQLite Databases, Captures & Cached ONNX Models
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.onnx
+data/
+desktop-app/data/
+desktop-app/models/
+captures/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+pip-wheel-metadata/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build & Distribution (PyInstaller, Nuitka, Inno Setup)
+build/
+dist/
+Output/
+desktop-app/build/
+desktop-app/dist/
+desktop-app/Output/
+desktop-app/installer/Output/
+*.spec
+*.exe
+out/
+release/
+
+# License Local Cache
+license_cache.dat
+*.dat
+
+# Node / Web Portal (Etapas futuras)
+node_modules/
+.next/
+.nuxt/
+.turbo/
+.vercel/
+
+# Supabase local temp
+supabase/.temp/
+supabase/.branches/
+
+# Logs & OS artifacts
+*.log
+logs/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo

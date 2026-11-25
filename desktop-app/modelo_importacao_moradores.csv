@@ -1,0 +1,5 @@
+placa;nome_responsavel;unidade_bloco;modelo_cor;perfil;validade_ate
+ABC1D23;Carlos Eduardo Mendes;Bloco A - Apto 302;Toyota Corolla Prata;MORADOR;
+XYZ4E56;Fernanda Oliveira;Bloco B - Apto 105;Honda HR-V Branco;MORADOR;
+VIS7G89;Roberto Souza (Visitante);Bloco A - Apto 302;VW Polo Cinza;VISITANTE;2026-12-31
+BLK9H00;Veiculo Restrito Exemplo;Portaria;Fiat Uno Vermelho;BLOQUEADO;
