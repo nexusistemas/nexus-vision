@@ -10,6 +10,11 @@
     />
     <link rel="icon" type="image/x-icon" href="./favicon.ico" />
     <link rel="apple-touch-icon" href="./logo.png" />
+    <script>
+      if (window.location.protocol === 'http:' && window.location.hostname === 'vision.nexusistemas.app.br') {
+        window.location.replace('https://' + window.location.host + window.location.pathname + window.location.search + window.location.hash);
+      }
+    </script>
   </head>
   <body class="bg-[#070D19] text-slate-100 antialiased selection:bg-cyan-500/30 selection:text-cyan-200">
     <div id="root"></div>
