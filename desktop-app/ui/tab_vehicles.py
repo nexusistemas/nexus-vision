@@ -47,6 +47,8 @@ class VehiclesTab(QWidget):
     """Aba de gerenciamento local de moradores, visitantes e bloqueados."""
 
     vehicles_changed = Signal()
+    cloud_backup_requested = Signal()
+    cloud_restore_requested = Signal()
 
     def __init__(self, db: DatabaseManager, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -178,6 +180,18 @@ class VehiclesTab(QWidget):
         self.btn_export_csv = QPushButton("⬇  Exportar CSV")
         self.btn_export_csv.clicked.connect(self._export_csv)
 
+        self.btn_cloud_backup = QPushButton("☁  Backup Nuvem")
+        self.btn_cloud_backup.setToolTip(
+            "Envia agora uma cópia dos veículos cadastrados para a nuvem vinculada à sua licença"
+        )
+        self.btn_cloud_backup.clicked.connect(self.cloud_backup_requested.emit)
+
+        self.btn_cloud_restore = QPushButton("☁  Restaurar")
+        self.btn_cloud_restore.setToolTip(
+            "Baixa e restaura todos os veículos salvos na nuvem para esta licença"
+        )
+        self.btn_cloud_restore.clicked.connect(self.cloud_restore_requested.emit)
+
         self.lbl_count = QLabel("0 registros")
         self.lbl_count.setProperty("muted", "true")
 
@@ -185,8 +199,14 @@ class VehiclesTab(QWidget):
         tc_layout.addWidget(self.cmb_filter_profile)
         tc_layout.addWidget(self.btn_import_csv)
         tc_layout.addWidget(self.btn_export_csv)
+        tc_layout.addWidget(self.btn_cloud_backup)
+        tc_layout.addWidget(self.btn_cloud_restore)
         tc_layout.addWidget(self.lbl_count)
         root.addWidget(tools_card)
+
+        self.lbl_cloud_status = QLabel("☁ Backup automático na nuvem vinculado à licença (ativo ao cadastrar/editar veículos)")
+        self.lbl_cloud_status.setStyleSheet("color: #64748B; font-size: 11px; padding-left: 4px; background: transparent;")
+        root.addWidget(self.lbl_cloud_status)
 
         # --- Tabela de Veículos ---
         self.table = QTableWidget(0, 7)
@@ -256,6 +276,13 @@ class VehiclesTab(QWidget):
             f"CADASTRO RÁPIDO DA PLACA DETECTADA — {format_plate_display(plate_norm)}"
         )
         self.in_name.setFocus()
+
+    def set_cloud_status(self, message: str, ok: bool = True) -> None:
+        color = "#34D399" if ok else "#FBBF24"
+        self.lbl_cloud_status.setText(f"☁ {message}")
+        self.lbl_cloud_status.setStyleSheet(
+            f"color: {color}; font-size: 11px; font-weight: 600; padding-left: 4px; background: transparent;"
+        )
 
     def _save_vehicle(self) -> None:
         placa = normalize_plate(self.in_plate.text())

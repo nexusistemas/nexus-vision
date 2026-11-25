@@ -236,9 +236,12 @@ class MonitorTab(QWidget):
         self.spin_cooldown.setRange(5, 300)
         self.spin_cooldown.setValue(DEFAULT_COOLDOWN_SECONDS)
         self.spin_cooldown.setSuffix(" s")
-        self.spin_cooldown.setFixedWidth(72)
+        self.spin_cooldown.setMinimumHeight(34)
+        self.spin_cooldown.setFixedWidth(96)
+        self.spin_cooldown.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.spin_cooldown.setToolTip(
-            "Cooldown (segundos) para não repetir a mesma placa enquanto o carro aguarda o portão abrir"
+            "Tempo (em segundos) que o sistema ignora a mesma placa após lê-la,\n"
+            "evitando ficar apitando e gravando 10 registros repetidos enquanto o carro espera o portão abrir."
         )
         self.spin_cooldown.valueChanged.connect(self._on_cooldown_changed)
 

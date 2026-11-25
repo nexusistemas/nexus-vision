@@ -229,8 +229,34 @@ QLineEdit, QComboBox, QDateEdit, QSpinBox {
     color: #F8FAFC;
     border: 1px solid #26354D;
     border-radius: 8px;
-    padding: 8px 10px;
+    padding: 7px 10px;
     selection-background-color: #0891B2;
+}
+
+QSpinBox {
+    padding: 6px 26px 6px 10px;
+}
+
+QSpinBox::up-button, QSpinBox::down-button {
+    subcontrol-origin: border;
+    width: 22px;
+    background-color: #162238;
+    border-left: 1px solid #26354D;
+}
+
+QSpinBox::up-button {
+    subcontrol-position: top right;
+    border-top-right-radius: 7px;
+    border-bottom: 1px solid #26354D;
+}
+
+QSpinBox::down-button {
+    subcontrol-position: bottom right;
+    border-bottom-right-radius: 7px;
+}
+
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+    background-color: #1E3352;
 }
 
 QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QSpinBox:focus {

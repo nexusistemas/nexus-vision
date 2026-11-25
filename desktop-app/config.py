@@ -53,7 +53,7 @@ MODELS_DIR: Path = BUNDLE_DIR / "models"
 APP_NAME: str = "Nexus Vision"
 APP_SUBTITLE: str = "Monitoramento Veicular Inteligente 24h"
 COMPANY_NAME: str = "NexuSistemas Tecnologia"
-APP_VERSION: str = "1.0.2"
+APP_VERSION: str = "1.0.3"
 
 # Parâmetros padrão de captura, movimento e motor ALPR
 CAPTURE_TARGET_FPS: int = 15

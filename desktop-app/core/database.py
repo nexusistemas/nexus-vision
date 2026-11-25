@@ -393,6 +393,51 @@ class DatabaseManager:
             row = self._conn.execute("SELECT COUNT(*) FROM veiculos;").fetchone()
             return int(row[0]) if row else 0
 
+    def bulk_upsert_vehicles(self, vehicles: list[dict[str, Any]]) -> dict[str, int]:
+        """Insere ou atualiza em lote veículos vindos da restauração em nuvem."""
+        inserted = 0
+        updated = 0
+        with self._lock:
+            for item in vehicles:
+                placa = normalize_plate(str(item.get("placa") or ""))
+                nome = str(item.get("nome_responsavel") or "").strip()
+                if len(placa) < 7 or not nome:
+                    continue
+                unidade = str(item.get("unidade_bloco") or "").strip()
+                modelo = str(item.get("modelo_cor") or "").strip()
+                perfil = str(item.get("perfil") or "MORADOR").strip().upper()
+                if perfil not in VEHICLE_PROFILES:
+                    perfil = "MORADOR"
+                validade = str(item.get("validade_ate") or "").strip() or None
+
+                existing = self._conn.execute(
+                    "SELECT id FROM veiculos WHERE placa = ?;", (placa,)
+                ).fetchone()
+                if existing:
+                    self._conn.execute(
+                        """
+                        UPDATE veiculos
+                        SET nome_responsavel = ?, unidade_bloco = ?, modelo_cor = ?,
+                            perfil = ?, validade_ate = ?
+                        WHERE id = ?;
+                        """,
+                        (nome, unidade, modelo, perfil, validade, existing["id"]),
+                    )
+                    updated += 1
+                else:
+                    self._conn.execute(
+                        """
+                        INSERT INTO veiculos (
+                            placa, nome_responsavel, unidade_bloco, modelo_cor, perfil, validade_ate
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?);
+                        """,
+                        (placa, nome, unidade, modelo, perfil, validade),
+                    )
+                    inserted += 1
+            self._conn.commit()
+        return {"inserted": inserted, "updated": updated}
+
     def evaluate_plate_access(self, placa: str) -> tuple[str, Optional[dict[str, Any]]]:
         """
         Avalia uma placa contra o banco local offline-first e retorna:

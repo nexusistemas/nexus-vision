@@ -236,3 +236,182 @@ CREATE POLICY "admin_update_config_portal"
     TO authenticated
     USING ((SELECT auth.role()) = 'authenticated')
     WITH CHECK ((SELECT auth.role()) = 'authenticated');
+
+-- ==============================================================================
+-- 5. Backup Automático na Nuvem de Veículos por Licença (Recuperação de PC Novo)
+-- ==============================================================================
+CREATE TABLE IF NOT EXISTS public.veiculos_backup (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    licenca_id uuid NOT NULL REFERENCES public.licencas(id) ON DELETE CASCADE,
+    placa text NOT NULL,
+    nome_responsavel text NOT NULL,
+    unidade_bloco text NOT NULL DEFAULT '',
+    modelo_cor text NOT NULL DEFAULT '',
+    perfil text NOT NULL DEFAULT 'MORADOR'
+        CHECK (perfil IN ('MORADOR', 'VISITANTE', 'BLOQUEADO')),
+    validade_ate text DEFAULT NULL,
+    atualizado_em timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_veiculos_backup_licenca_placa UNIQUE (licenca_id, placa)
+);
+
+CREATE INDEX IF NOT EXISTS idx_veiculos_backup_licenca ON public.veiculos_backup (licenca_id);
+
+ALTER TABLE public.veiculos_backup ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE public.veiculos_backup FROM anon, public;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.veiculos_backup TO authenticated;
+
+DROP POLICY IF EXISTS "admin_all_veiculos_backup" ON public.veiculos_backup;
+CREATE POLICY "admin_all_veiculos_backup"
+    ON public.veiculos_backup
+    FOR ALL
+    TO authenticated
+    USING ((SELECT auth.role()) = 'authenticated')
+    WITH CHECK ((SELECT auth.role()) = 'authenticated');
+
+-- RPC 1: Envia snapshot dos veículos do PC para a nuvem (somente licença ATIVA + HWID válido)
+CREATE OR REPLACE FUNCTION public.sincronizar_veiculos_backup(
+    p_codigo text,
+    p_hwid text,
+    p_veiculos jsonb
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+    v_codigo text := upper(trim(coalesce(p_codigo, '')));
+    v_hwid text := upper(trim(coalesce(p_hwid, '')));
+    v_lic public.licencas%ROWTYPE;
+    v_item jsonb;
+    v_placa text;
+    v_nome text;
+    v_perfil text;
+    v_count integer := 0;
+BEGIN
+    SELECT *
+    INTO v_lic
+    FROM public.licencas
+    WHERE codigo = v_codigo;
+
+    IF NOT FOUND OR v_lic.status <> 'ATIVA' OR v_lic.validade_ate <= now() THEN
+        RETURN jsonb_build_object('ok', false, 'error', 'LICENCA_INATIVA');
+    END IF;
+
+    IF v_lic.hwid_vinculado IS NULL OR upper(trim(v_lic.hwid_vinculado)) <> v_hwid THEN
+        RETURN jsonb_build_object('ok', false, 'error', 'HWID_MISMATCH');
+    END IF;
+
+    IF p_veiculos IS NULL OR jsonb_typeof(p_veiculos) <> 'array' THEN
+        RETURN jsonb_build_object('ok', false, 'error', 'PAYLOAD_INVALIDO');
+    END IF;
+
+    -- Sincronização atômica: substitui o snapshot desta licença pelo estado atual do SQLite
+    DELETE FROM public.veiculos_backup WHERE licenca_id = v_lic.id;
+
+    FOR v_item IN SELECT * FROM jsonb_array_elements(p_veiculos)
+    LOOP
+        v_placa := upper(regexp_replace(coalesce(v_item ->> 'placa', ''), '[^A-Za-z0-9]', '', 'g'));
+        v_nome := trim(coalesce(v_item ->> 'nome_responsavel', ''));
+        v_perfil := upper(trim(coalesce(v_item ->> 'perfil', 'MORADOR')));
+        IF v_perfil NOT IN ('MORADOR', 'VISITANTE', 'BLOQUEADO') THEN
+            v_perfil := 'MORADOR';
+        END IF;
+
+        IF length(v_placa) >= 7 AND v_nome <> '' THEN
+            INSERT INTO public.veiculos_backup (
+                licenca_id, placa, nome_responsavel, unidade_bloco, modelo_cor, perfil, validade_ate, atualizado_em
+            )
+            VALUES (
+                v_lic.id,
+                left(v_placa, 7),
+                v_nome,
+                trim(coalesce(v_item ->> 'unidade_bloco', '')),
+                trim(coalesce(v_item ->> 'modelo_cor', '')),
+                v_perfil,
+                nullif(trim(coalesce(v_item ->> 'validade_ate', '')), ''),
+                now()
+            )
+            ON CONFLICT (licenca_id, placa) DO UPDATE SET
+                nome_responsavel = excluded.nome_responsavel,
+                unidade_bloco = excluded.unidade_bloco,
+                modelo_cor = excluded.modelo_cor,
+                perfil = excluded.perfil,
+                validade_ate = excluded.validade_ate,
+                atualizado_em = now();
+            v_count := v_count + 1;
+        END IF;
+    END LOOP;
+
+    RETURN jsonb_build_object(
+        'ok', true,
+        'total_salvos', v_count,
+        'condominio_nome', v_lic.condominio_nome,
+        'server_time', now()
+    );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.sincronizar_veiculos_backup(text, text, jsonb) FROM public;
+GRANT EXECUTE ON FUNCTION public.sincronizar_veiculos_backup(text, text, jsonb) TO anon, authenticated;
+
+-- RPC 2: Restaura todos os veículos salvos na nuvem para um PC novo/formatado
+CREATE OR REPLACE FUNCTION public.restaurar_veiculos_backup(
+    p_codigo text,
+    p_hwid text
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+    v_codigo text := upper(trim(coalesce(p_codigo, '')));
+    v_hwid text := upper(trim(coalesce(p_hwid, '')));
+    v_lic public.licencas%ROWTYPE;
+    v_veiculos jsonb;
+BEGIN
+    SELECT *
+    INTO v_lic
+    FROM public.licencas
+    WHERE codigo = v_codigo;
+
+    IF NOT FOUND OR v_lic.status <> 'ATIVA' OR v_lic.validade_ate <= now() THEN
+        RETURN jsonb_build_object('ok', false, 'error', 'LICENCA_INATIVA', 'veiculos', '[]'::jsonb);
+    END IF;
+
+    IF v_lic.hwid_vinculado IS NULL OR upper(trim(v_lic.hwid_vinculado)) <> v_hwid THEN
+        RETURN jsonb_build_object('ok', false, 'error', 'HWID_MISMATCH', 'veiculos', '[]'::jsonb);
+    END IF;
+
+    SELECT coalesce(
+        jsonb_agg(
+            jsonb_build_object(
+                'placa', vb.placa,
+                'nome_responsavel', vb.nome_responsavel,
+                'unidade_bloco', vb.unidade_bloco,
+                'modelo_cor', vb.modelo_cor,
+                'perfil', vb.perfil,
+                'validade_ate', vb.validade_ate
+            )
+            ORDER BY vb.nome_responsavel ASC
+        ),
+        '[]'::jsonb
+    )
+    INTO v_veiculos
+    FROM public.veiculos_backup vb
+    WHERE vb.licenca_id = v_lic.id;
+
+    RETURN jsonb_build_object(
+        'ok', true,
+        'condominio_nome', v_lic.condominio_nome,
+        'total', jsonb_array_length(v_veiculos),
+        'veiculos', v_veiculos,
+        'server_time', now()
+    );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.restaurar_veiculos_backup(text, text) FROM public;
+GRANT EXECUTE ON FUNCTION public.restaurar_veiculos_backup(text, text) TO anon, authenticated;

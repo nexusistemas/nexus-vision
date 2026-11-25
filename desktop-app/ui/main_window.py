@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -30,6 +31,7 @@ from config import (
     COMPANY_NAME,
     cleanup_old_captures,
 )
+from core.cloud_backup import CloudBackupWorker
 from core.database import DatabaseManager
 from core.license_manager import LicenseHeartbeatWorker, LicenseManager, LicenseStatus
 from ui.tab_history import HistoryTab
@@ -46,6 +48,12 @@ class MainWindow(QMainWindow):
         self.db = db
         self.license_manager = LicenseManager(self.db)
         self.license_heartbeat = LicenseHeartbeatWorker(self.license_manager, parent=self)
+        self._cloud_worker: Optional[CloudBackupWorker] = None
+        self._auto_restore_checked: bool = False
+        self._cloud_sync_timer = QTimer(self)
+        self._cloud_sync_timer.setSingleShot(True)
+        self._cloud_sync_timer.setInterval(3000)
+        self._cloud_sync_timer.timeout.connect(lambda: self._run_cloud_operation("backup", silent=True))
         self._nav_buttons: list[QPushButton] = []
 
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION} — {COMPANY_NAME}")
@@ -242,6 +250,9 @@ class MainWindow(QMainWindow):
         self.tab_monitor.open_license_tab_requested.connect(lambda: self._switch_tab(3))
         self.tab_vehicles.vehicles_changed.connect(self._update_vehicle_counter)
         self.tab_vehicles.vehicles_changed.connect(self.tab_monitor.refresh_recent_passages)
+        self.tab_vehicles.vehicles_changed.connect(self._schedule_auto_cloud_backup)
+        self.tab_vehicles.cloud_backup_requested.connect(lambda: self._run_cloud_operation("backup", silent=False))
+        self.tab_vehicles.cloud_restore_requested.connect(self._confirm_and_restore_cloud)
         self.license_heartbeat.license_updated.connect(self._on_license_updated)
 
     def _switch_tab(self, index: int) -> None:
@@ -319,6 +330,10 @@ class MainWindow(QMainWindow):
         if status.mode == "ONLINE_VALID":
             self.lbl_sb_license.setText("● Licença: ATIVA")
             self.lbl_sb_license.setStyleSheet("color: #10B981; font-size: 11px; font-weight: 700; background: transparent;")
+            # Se for PC recém-formatado/novo (base local vazia), tenta restaurar backup da nuvem automaticamente!
+            if not self._auto_restore_checked and self.db.count_vehicles() == 0:
+                self._auto_restore_checked = True
+                self._run_cloud_operation("restore", silent=True)
         elif status.mode == "OFFLINE_GRACE":
             self.lbl_sb_license.setText("● Licença: OFFLINE 72h")
             self.lbl_sb_license.setStyleSheet("color: #38BDF8; font-size: 11px; font-weight: 700; background: transparent;")
@@ -329,7 +344,80 @@ class MainWindow(QMainWindow):
             self.lbl_sb_license.setText(f"● Licença: {status.mode}")
             self.lbl_sb_license.setStyleSheet("color: #F87171; font-size: 11px; font-weight: 700; background: transparent;")
 
+    def _schedule_auto_cloud_backup(self) -> None:
+        st = self.license_manager.current_status
+        if st.allowed and st.code and not st.is_demo:
+            self.tab_vehicles.set_cloud_status("Sincronizando alterações na nuvem em instantes...", ok=True)
+            self._cloud_sync_timer.start()
+
+    def _confirm_and_restore_cloud(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Restaurar Backup da Nuvem",
+            "Deseja baixar e restaurar todos os veículos salvos na nuvem para a licença atual?\n\n"
+            "Placas já cadastradas localmente serão atualizadas e novas placas da nuvem serão adicionadas.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._run_cloud_operation("restore", silent=False)
+
+    def _run_cloud_operation(self, mode: str, silent: bool = False) -> None:
+        if self._cloud_worker is not None and self._cloud_worker.isRunning():
+            return
+        code = self.license_manager.get_saved_license_code()
+        if not code:
+            if not silent:
+                QMessageBox.information(
+                    self,
+                    "Licença Necessária",
+                    "Ative sua chave de licença na Aba 4 (Conta & Licença) para utilizar o backup na nuvem.",
+                )
+            return
+
+        self.tab_vehicles.set_cloud_status(
+            "Enviando backup para a nuvem..." if mode == "backup" else "Buscando backup na nuvem...",
+            ok=True,
+        )
+        self._cloud_worker = CloudBackupWorker(
+            mode=mode,
+            db=self.db,
+            license_code=code,
+            hwid=self.license_manager.hwid,
+            silent=silent,
+            parent=self,
+        )
+        self._cloud_worker.finished_operation.connect(self._on_cloud_operation_finished)
+        self._cloud_worker.start()
+
+    def _on_cloud_operation_finished(
+        self, ok: bool, mode: str, message: str, extra: dict
+    ) -> None:
+        silent = bool(extra.get("silent", False))
+        now_hm = datetime.now().strftime("%H:%M:%S")
+        self.tab_vehicles.set_cloud_status(f"{message} ({now_hm})", ok=ok)
+
+        if mode == "restore" and ok and int(extra.get("total") or 0) > 0:
+            self.tab_vehicles.refresh_table()
+            self._update_vehicle_counter()
+            self.tab_monitor.refresh_recent_passages()
+            QMessageBox.information(
+                self,
+                "Backup Restaurado da Nuvem",
+                f"{message}\n\nSeus moradores e veículos já estão prontos para leitura offline.",
+            )
+            return
+
+        if not silent:
+            if ok:
+                QMessageBox.information(self, "Nuvem Nexus Vision", message)
+            else:
+                QMessageBox.warning(self, "Nuvem Nexus Vision", message)
+
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._cloud_sync_timer.stop()
+        if self._cloud_worker is not None and self._cloud_worker.isRunning():
+            self._cloud_worker.wait(2500)
         self.license_heartbeat.stop()
         self.tab_monitor.shutdown()
         self.db.close()
