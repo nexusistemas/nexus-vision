@@ -7,6 +7,7 @@ limpo com destaque máximo para Morador/Casa/Veículo e lista lateral das últim
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any, Optional
 
@@ -39,6 +40,7 @@ from config import (
     DEFAULT_MOTION_SENSITIVITY,
     DEFAULT_SOUND_ENABLED,
     MAX_RECENT_PASSAGES,
+    SETTINGS_PATH,
 )
 from core.alpr_engine import (
     DEFAULT_QUALITY_PRESET,
@@ -133,9 +135,13 @@ class MonitorTab(QWidget):
         self._blink_state = False
 
         self._build_ui()
+        self._load_user_preferences()
         self._load_saved_roi()
         self.refresh_recent_passages()
         self._start_alpr_engine()
+        # Se já houver área de câmera salva, inicia a captura automaticamente ao abrir!
+        if self._active_roi:
+            QTimer.singleShot(350, self._start_capture_worker)
 
     # =========================================================================
     # CONSTRUÇÃO DA INTERFACE
@@ -536,6 +542,7 @@ class MonitorTab(QWidget):
         preset_key = self.cmb_quality.currentData() or DEFAULT_QUALITY_PRESET
         if self._alpr_worker:
             self._alpr_worker.set_quality_preset(str(preset_key))
+        self._save_user_preferences()
 
     def _on_alpr_status(self, message: str, ready: bool) -> None:
         self._alpr_ready = ready
@@ -682,10 +689,53 @@ class MonitorTab(QWidget):
     def _on_cooldown_changed(self, seconds: int) -> None:
         if self._alpr_worker:
             self._alpr_worker.set_cooldown_seconds(seconds)
+        self._save_user_preferences()
 
     def _on_sound_toggled(self, checked: bool) -> None:
         self.sound.set_enabled(checked)
         self._refresh_sound_button_style(checked)
+        self._save_user_preferences()
+
+    def _load_user_preferences(self) -> None:
+        """Restaura Nitidez, Espera (Cooldown) e Som salvos na última sessão."""
+        if not SETTINGS_PATH.exists():
+            return
+        try:
+            prefs = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        qual = str(prefs.get("quality_preset") or DEFAULT_QUALITY_PRESET)
+        idx = self.cmb_quality.findData(qual)
+        if idx >= 0:
+            self.cmb_quality.blockSignals(True)
+            self.cmb_quality.setCurrentIndex(idx)
+            self.cmb_quality.blockSignals(False)
+
+        if "cooldown_seconds" in prefs:
+            self.spin_cooldown.blockSignals(True)
+            self.spin_cooldown.setValue(max(5, min(300, int(prefs["cooldown_seconds"]))))
+            self.spin_cooldown.blockSignals(False)
+
+        if "sound_enabled" in prefs:
+            snd = bool(prefs["sound_enabled"])
+            self.btn_sound_toggle.blockSignals(True)
+            self.btn_sound_toggle.setChecked(snd)
+            self.btn_sound_toggle.blockSignals(False)
+            self.sound.set_enabled(snd)
+            self._refresh_sound_button_style(snd)
+
+    def _save_user_preferences(self) -> None:
+        try:
+            SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "quality_preset": self.cmb_quality.currentData() or DEFAULT_QUALITY_PRESET,
+                "cooldown_seconds": int(self.spin_cooldown.value()),
+                "sound_enabled": bool(self.btn_sound_toggle.isChecked()),
+            }
+            SETTINGS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except OSError:
+            pass
 
     def _refresh_sound_button_style(self, enabled: bool) -> None:
         if enabled:
@@ -716,10 +766,12 @@ class MonitorTab(QWidget):
     def _update_roi_label(self) -> None:
         if not self._active_roi:
             self.lbl_roi_info.setText("CAPTURA AO VIVO — Nenhuma área ROI selecionada")
+            self.btn_select_roi.setText("⌖  Selecionar Câmera")
             return
         r = self._active_roi
+        self.btn_select_roi.setText("⌖  Reconfigurar Câmera")
         self.lbl_roi_info.setText(
-            f"ROI ATIVA: {r['width']}×{r['height']} px  •  ({r['left']}, {r['top']})  •  Monitor {r['monitor_index']}"
+            f"CÂMERA SALVA: {r['width']}×{r['height']} px  •  ({r['left']}, {r['top']})  •  Monitor {r['monitor_index']}"
         )
 
     def _open_roi_selector(self) -> None:

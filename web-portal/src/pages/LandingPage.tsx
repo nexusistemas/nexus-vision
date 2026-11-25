@@ -29,9 +29,9 @@ interface ReleaseInfo {
 }
 
 const FALLBACK_RELEASE: ReleaseInfo = {
-  version: 'v1.0.3',
+  version: 'v1.0.4',
   downloadUrl: `https://github.com/${GITHUB_REPO}/releases/latest/download/NexusVision_Setup.exe`,
-  fileName: 'NexusVision_Setup_v1.0.3.exe',
+  fileName: 'NexusVision_Setup_v1.0.4.exe',
 };
 
 export function LandingPage() {

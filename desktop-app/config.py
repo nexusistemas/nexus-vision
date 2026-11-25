@@ -53,7 +53,7 @@ MODELS_DIR: Path = BUNDLE_DIR / "models"
 APP_NAME: str = "Nexus Vision"
 APP_SUBTITLE: str = "Monitoramento Veicular Inteligente 24h"
 COMPANY_NAME: str = "NexuSistemas Tecnologia"
-APP_VERSION: str = "1.0.3"
+APP_VERSION: str = "1.0.4"
 
 # Parâmetros padrão de captura, movimento e motor ALPR
 CAPTURE_TARGET_FPS: int = 15
@@ -67,7 +67,9 @@ DEFAULT_VOTE_WINDOW: int = 5
 DEFAULT_MIN_VOTES: int = 2
 DEFAULT_HIGH_CONFIDENCE: float = 0.90
 DEFAULT_SOUND_ENABLED: bool = True
-CAPTURES_RETENTION_DAYS: int = 30
+CAPTURES_RETENTION_HOURS: int = 24
+HISTORY_RETENTION_HOURS: int = 24
+SETTINGS_PATH: Path = DATA_DIR / "app_settings.json"
 
 # Domínios de negócio
 VEHICLE_PROFILES: tuple[str, ...] = ("MORADOR", "VISITANTE", "BLOQUEADO")
@@ -107,28 +109,36 @@ def get_daily_captures_dir(dt: Optional[datetime] = None) -> Path:
     return folder
 
 
-def cleanup_old_captures(max_days: int = CAPTURES_RETENTION_DAYS) -> int:
-    """Remove subpastas YYYY-MM-DD mais antigas que max_days."""
-    if not CAPTURES_DIR.exists() or max_days <= 0:
+def cleanup_old_captures(max_hours: int = CAPTURES_RETENTION_HOURS) -> int:
+    """
+    Remove fotos capturadas mais antigas que max_hours (padrão: 24 horas)
+    e limpa pastas diárias vazias para operação contínua 24h sem encher o disco.
+    """
+    if not CAPTURES_DIR.exists() or max_hours <= 0:
         return 0
-    cutoff = date.today() - timedelta(days=int(max_days))
+    cutoff_ts = (datetime.now() - timedelta(hours=int(max_hours))).timestamp()
     removed = 0
-    for entry in CAPTURES_DIR.iterdir():
-        if not entry.is_dir():
+    for file_path in list(CAPTURES_DIR.rglob("*")):
+        if not file_path.is_file():
             continue
         try:
-            folder_date = datetime.strptime(entry.name, "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        if folder_date < cutoff:
-            try:
-                for child in entry.rglob("*"):
-                    if child.is_file():
-                        child.unlink(missing_ok=True)
-                entry.rmdir()
+            if file_path.stat().st_mtime < cutoff_ts:
+                file_path.unlink(missing_ok=True)
                 removed += 1
-            except OSError:
-                continue
+        except OSError:
+            continue
+
+    # Remove subpastas vazias (YYYY-MM-DD)
+    for folder in sorted(
+        (p for p in CAPTURES_DIR.rglob("*") if p.is_dir()),
+        key=lambda p: len(p.parts),
+        reverse=True,
+    ):
+        try:
+            if not any(folder.iterdir()):
+                folder.rmdir()
+        except OSError:
+            continue
     return removed
 
 

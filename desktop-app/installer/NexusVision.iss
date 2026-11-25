@@ -4,7 +4,7 @@
 ; =============================================================================
 
 #define MyAppName "Nexus Vision"
-#define MyAppVersion "1.0.3"
+#define MyAppVersion "1.0.4"
 #define MyAppPublisher "NexuSistemas Tecnologia"
 #define MyAppURL "https://vision.nexusistemas.app.br"
 #define MyAppExeName "NexusVision.exe"
@@ -24,7 +24,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=C:\Users\Guilh\OneDrive\Área de Trabalho\nexus vision\Output
-OutputBaseFilename=NexusVision_Setup_v1.0.3
+OutputBaseFilename=NexusVision_Setup_v1.0.4
 SetupIconFile=C:\Users\Guilh\OneDrive\Área de Trabalho\nexus vision\desktop-app\assets\nexus_vision.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/max

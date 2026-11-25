@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 DESKTOP_APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = DESKTOP_APP_DIR.parent
@@ -63,14 +63,38 @@ def step_1_prepare_icon_and_assets() -> Path:
 
     ico_path = ASSETS_DIR / "nexus_vision.ico"
     if source_png is not None:
-        img = Image.open(source_png).convert("RGBA")
-        # Centraliza em canvas quadrado preservando proporção
-        side = max(img.width, img.height)
-        square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-        square.paste(img, ((side - img.width) // 2, (side - img.height) // 2), img)
+        raw_img = Image.open(source_png).convert("RGBA")
+        # Remove margens transparentes excessivas para o símbolo ficar grande e nítido
+        bbox = raw_img.getbbox()
+        if bbox:
+            raw_img = raw_img.crop(bbox)
+
+        # Cria ícone moderno Windows 11 com fundo sólido arredondado + borda ciano
+        # (garante alta visibilidade sobre qualquer papel de parede escuro ou texturizado)
+        canvas_size = 512
+        badge = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(badge)
+        margin = 14
+        radius = 104
+        # Fundo claro elegante (#F1F5F9) com borda ciano corporativa (#06B6D4)
+        draw.rounded_rectangle(
+            (margin, margin, canvas_size - margin, canvas_size - margin),
+            radius=radius,
+            fill=(241, 245, 249, 255),
+            outline=(6, 182, 212, 255),
+            width=18,
+        )
+
+        # Redimensiona o símbolo ocupando ~76% do interior do ícone
+        inner_max = int(canvas_size * 0.74)
+        raw_img.thumbnail((inner_max, inner_max), Image.Resampling.LANCZOS)
+        offset_x = (canvas_size - raw_img.width) // 2
+        offset_y = (canvas_size - raw_img.height) // 2
+        badge.paste(raw_img, (offset_x, offset_y), raw_img)
+
         sizes = [(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)]
-        square.save(ico_path, format="ICO", sizes=sizes)
-        print(f"  -> Ícone gerado: {ico_path} (origem: {source_png.name})")
+        badge.save(ico_path, format="ICO", sizes=sizes)
+        print(f"  -> Ícone alto-contraste gerado: {ico_path} (origem: {source_png.name})")
     elif BRAND_ASSETS.app_icon and BRAND_ASSETS.app_icon.exists():
         shutil.copy2(BRAND_ASSETS.app_icon, ico_path)
         print(f"  -> Ícone copiado: {ico_path}")

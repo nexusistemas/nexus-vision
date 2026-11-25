@@ -702,6 +702,21 @@ class DatabaseManager:
                 "alertas_hoje": alertas,
             }
 
+    def prune_old_history(self, max_hours: int = 24) -> int:
+        """Remove registros de historico_acessos mais antigos que max_hours (padrão: 24h)."""
+        if max_hours <= 0:
+            return 0
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM historico_acessos WHERE data_hora < datetime('now', 'localtime', ?);",
+                (f"-{int(max_hours)} hours",),
+            )
+            deleted = cur.rowcount or 0
+            if deleted > 0:
+                self._conn.execute("PRAGMA optimize;")
+            self._conn.commit()
+            return deleted
+
     # =========================================================================
     # 4. LICENCIAMENTO LOCAL (config_licenca)
     # =========================================================================

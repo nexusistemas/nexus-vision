@@ -28,7 +28,9 @@ from config import (
     APP_SUBTITLE,
     APP_VERSION,
     BRAND_ASSETS,
+    CAPTURES_RETENTION_HOURS,
     COMPANY_NAME,
+    HISTORY_RETENTION_HOURS,
     cleanup_old_captures,
 )
 from core.cloud_backup import CloudBackupWorker
@@ -68,7 +70,12 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._start_clock()
         self._switch_tab(0)
-        cleanup_old_captures()
+        self._run_24h_cleanup()
+        # Limpeza automática contínua a cada 1 hora (mantém apenas últimas 24h mesmo rodando sem fechar)
+        self._cleanup_timer = QTimer(self)
+        self._cleanup_timer.setInterval(60 * 60 * 1000)
+        self._cleanup_timer.timeout.connect(self._run_24h_cleanup)
+        self._cleanup_timer.start()
         self.license_heartbeat.start()
 
     def _build_ui(self) -> None:
@@ -142,9 +149,9 @@ class MainWindow(QMainWindow):
 
         nav_items = [
             ("📹   Monitoramento Ao Vivo", "Monitoramento Ao Vivo", "Captura ROI em tempo real e gatilho de movimento"),
-            ("🚗   Moradores & Veículos", "Cadastro de Moradores e Veículos", "Base local offline-first e importação CSV"),
+            ("🚗   Moradores && Veículos", "Cadastro de Moradores e Veículos", "Base local offline-first e importação CSV"),
             ("🕒   Histórico de Acessos", "Histórico de Acessos", "Auditoria por data, placa e miniatura capturada"),
-            ("🔐   Conta & Licença", "Conta & Licença", "Identificação HWID Windows e ativação vision.nexusistemas.app.br"),
+            ("🔐   Conta && Licença", "Conta & Licença", "Identificação HWID Windows e ativação vision.nexusistemas.app.br"),
         ]
         self._page_meta: list[tuple[str, str]] = []
 
@@ -414,7 +421,16 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.warning(self, "Nuvem Nexus Vision", message)
 
+    def _run_24h_cleanup(self) -> None:
+        """Apaga automaticamente fotos e histórico com mais de 24 horas."""
+        cleanup_old_captures(max_hours=CAPTURES_RETENTION_HOURS)
+        deleted = self.db.prune_old_history(max_hours=HISTORY_RETENTION_HOURS)
+        if deleted > 0:
+            self.tab_monitor.refresh_recent_passages()
+            self.tab_history.refresh_history()
+
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._cleanup_timer.stop()
         self._cloud_sync_timer.stop()
         if self._cloud_worker is not None and self._cloud_worker.isRunning():
             self._cloud_worker.wait(2500)

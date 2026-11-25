@@ -70,47 +70,79 @@ class UpdateCheckWorker(QThread):
                 "User-Agent": f"NexusVision/{self.current_version}",
             },
         )
+        data: Optional[dict[str, Any]] = None
+        api_error: Optional[str] = None
         try:
             with urllib.request.urlopen(req, timeout=10.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as err:
             if err.code == 404:
                 result["error"] = "Nenhuma release publicada ainda no repositório GitHub."
-            else:
-                result["error"] = f"Erro HTTP {err.code} ao consultar GitHub Releases."
-            self.check_finished.emit(result)
-            return
+                self.check_finished.emit(result)
+                return
+            api_error = f"Erro HTTP {err.code} na API GitHub"
         except Exception as exc:
-            result["error"] = f"Não foi possível verificar atualizações ({exc})."
-            self.check_finished.emit(result)
-            return
+            api_error = str(exc)
 
-        tag = str(data.get("tag_name") or "").strip()
-        latest_clean = tag.lstrip("vV") or self.current_version
-        result["latest_version"] = latest_clean
-        result["release_notes"] = str(data.get("body") or "").strip()[:600]
-        result["html_url"] = str(data.get("html_url") or result["html_url"])
+        if data is not None:
+            tag = str(data.get("tag_name") or "").strip()
+            latest_clean = tag.lstrip("vV") or self.current_version
+            result["latest_version"] = latest_clean
+            result["release_notes"] = str(data.get("body") or "").strip()[:600]
+            result["html_url"] = str(data.get("html_url") or result["html_url"])
 
-        # Procura asset .exe (prioridade para NexusVision_Setup*.exe)
-        assets = data.get("assets") or []
-        chosen_asset: Optional[dict[str, Any]] = None
-        for asset in assets:
-            name = str(asset.get("name") or "")
-            if name.lower().endswith(".exe") and "setup" in name.lower():
-                chosen_asset = asset
-                break
-        if chosen_asset is None:
+            assets = data.get("assets") or []
+            chosen_asset: Optional[dict[str, Any]] = None
             for asset in assets:
                 name = str(asset.get("name") or "")
-                if name.lower().endswith(".exe"):
+                if name.lower().endswith(".exe") and "setup" in name.lower():
                     chosen_asset = asset
                     break
+            if chosen_asset is None:
+                for asset in assets:
+                    name = str(asset.get("name") or "")
+                    if name.lower().endswith(".exe"):
+                        chosen_asset = asset
+                        break
 
-        if chosen_asset:
-            result["download_url"] = str(chosen_asset.get("browser_download_url") or "")
-            result["asset_name"] = str(chosen_asset.get("name") or "NexusVision_Setup.exe")
+            if chosen_asset:
+                result["download_url"] = str(chosen_asset.get("browser_download_url") or "")
+                result["asset_name"] = str(chosen_asset.get("name") or "NexusVision_Setup.exe")
+            else:
+                result["download_url"] = f"https://github.com/{self.repo}/releases/latest/download/NexusVision_Setup.exe"
+                result["asset_name"] = f"NexusVision_Setup_v{latest_clean}.exe"
 
-        result["available"] = is_newer_version(latest_clean, self.current_version)
+            result["available"] = is_newer_version(latest_clean, self.current_version)
+            self.check_finished.emit(result)
+            return
+
+        # Fallback SEM limite de taxa (evita HTTP 403 da API GitHub em IPs compartilhados/CGNAT):
+        # segue o redirect público https://github.com/<repo>/releases/latest -> /releases/tag/vX.Y.Z
+        try:
+            web_req = urllib.request.Request(
+                f"https://github.com/{self.repo}/releases/latest",
+                method="HEAD",
+                headers={"User-Agent": f"NexusVision/{self.current_version}"},
+            )
+            with urllib.request.urlopen(web_req, timeout=10.0) as wresp:
+                final_url = wresp.geturl()
+            tag_match = re.search(r"/releases/tag/v?(\d+\.\d+\.\d+)", final_url, re.IGNORECASE)
+            if not tag_match:
+                result["error"] = f"Não foi possível verificar atualizações ({api_error or 'tag não encontrada'})."
+                self.check_finished.emit(result)
+                return
+
+            latest_clean = tag_match.group(1)
+            result["latest_version"] = latest_clean
+            result["html_url"] = final_url
+            result["asset_name"] = f"NexusVision_Setup_v{latest_clean}.exe"
+            result["download_url"] = (
+                f"https://github.com/{self.repo}/releases/download/v{latest_clean}/NexusVision_Setup_v{latest_clean}.exe"
+            )
+            result["available"] = is_newer_version(latest_clean, self.current_version)
+        except Exception as exc:
+            result["error"] = f"Não foi possível verificar atualizações ({api_error or exc})."
+
         self.check_finished.emit(result)
 
 
