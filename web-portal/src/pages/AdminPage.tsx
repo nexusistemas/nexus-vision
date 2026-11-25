@@ -13,6 +13,7 @@ import {
   Lock,
   LogOut,
   MessageCircle,
+  Pencil,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -20,6 +21,7 @@ import {
   Search,
   ShieldAlert,
   ShieldCheck,
+  Trash2,
   Unlock,
   Users,
   X,
@@ -67,6 +69,19 @@ export function AdminPage() {
   const [portalWhatsApp, setPortalWhatsApp] = useState(WHATSAPP_NUMBER);
   const [portalMessage, setPortalMessage] = useState(DEFAULT_WHATSAPP_MESSAGE);
   const [savingPortal, setSavingPortal] = useState(false);
+
+  // Modal Editar Licença existente
+  const [editingLic, setEditingLic] = useState<Licenca | null>(null);
+  const [editCondominio, setEditCondominio] = useState('');
+  const [editContato, setEditContato] = useState('');
+  const [editPlano, setEditPlano] = useState<PlanoLicenca>('MENSAL');
+  const [editValidade, setEditValidade] = useState('');
+  const [editObs, setEditObs] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  // Modal Confirmar Exclusão (apaga licença + todos os backups na nuvem)
+  const [deletingLic, setDeletingLic] = useState<Licenca | null>(null);
+  const [deletingBusy, setDeletingBusy] = useState(false);
 
   const notify = useCallback((msg: string) => {
     setToast(msg);
@@ -276,6 +291,59 @@ export function AdminPage() {
     } catch {
       notify(`Chave: ${lic.codigo}`);
     }
+  };
+
+  const openEditModal = (lic: Licenca) => {
+    setEditingLic(lic);
+    setEditCondominio(lic.condominio_nome);
+    setEditContato(lic.responsavel_contato || '');
+    setEditPlano(lic.plano);
+    setEditValidade(lic.validade_ate ? lic.validade_ate.slice(0, 10) : '');
+    setEditObs(lic.observacoes || '');
+  };
+
+  const handleSaveEdit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!supabase || !editingLic || !editCondominio.trim()) return;
+    setSavingEdit(true);
+    const updatePayload: Record<string, string | null> = {
+      condominio_nome: editCondominio.trim(),
+      responsavel_contato: editContato.trim(),
+      plano: editPlano,
+      observacoes: editObs.trim() || null,
+    };
+    if (editValidade) {
+      updatePayload.validade_ate = new Date(`${editValidade}T23:59:59.000Z`).toISOString();
+    }
+    const { error } = await supabase
+      .from('licencas')
+      .update(updatePayload)
+      .eq('id', editingLic.id);
+    setSavingEdit(false);
+    if (error) {
+      notify(`Erro ao salvar alterações: ${error.message}`);
+      return;
+    }
+    setEditingLic(null);
+    notify(`Licença de ${editCondominio.trim()} atualizada com sucesso!`);
+    fetchLicencas();
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!supabase || !deletingLic) return;
+    setDeletingBusy(true);
+    // Apaga backups explicitamente + exclui a licença (ON DELETE CASCADE garante limpeza total)
+    await supabase.from('veiculos_backup').delete().eq('licenca_id', deletingLic.id);
+    const { error } = await supabase.from('licencas').delete().eq('id', deletingLic.id);
+    setDeletingBusy(false);
+    if (error) {
+      notify(`Erro ao excluir licença: ${error.message}`);
+      return;
+    }
+    const removedName = deletingLic.condominio_nome;
+    setDeletingLic(null);
+    notify(`Licença de ${removedName} e todos os backups na nuvem foram excluídos!`);
+    fetchLicencas();
   };
 
   const metrics = useMemo(() => {
@@ -658,6 +726,16 @@ export function AdminPage() {
 
                       <button
                         disabled={isBusy}
+                        onClick={() => openEditModal(lic)}
+                        title="Editar nome do condomínio, contato, plano ou validade"
+                        className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800/90 px-2.5 py-2 text-xs font-bold text-slate-200 hover:border-cyan-400 hover:text-cyan-300"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        Editar
+                      </button>
+
+                      <button
+                        disabled={isBusy}
                         onClick={() => handleToggleStatus(lic)}
                         className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-extrabold transition ${
                           lic.status === 'ATIVA'
@@ -675,6 +753,16 @@ export function AdminPage() {
                           </>
                         )}
                       </button>
+
+                      <button
+                        disabled={isBusy}
+                        onClick={() => setDeletingLic(lic)}
+                        title="Excluir licença e apagar todos os backups na nuvem"
+                        className="inline-flex items-center gap-1 rounded-lg border border-red-500/40 bg-red-950/60 px-2.5 py-2 text-xs font-bold text-red-300 transition hover:bg-red-600 hover:text-white"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Excluir
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -683,6 +771,153 @@ export function AdminPage() {
           )}
         </div>
       </main>
+
+      {/* Modal Editar Licença */}
+      {editingLic && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-700 bg-[#0F172A] p-6 shadow-2xl">
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-black text-white">Editar Licença</h2>
+                <p className="font-mono text-xs text-cyan-400">{editingLic.codigo}</p>
+              </div>
+              <button
+                onClick={() => setEditingLic(null)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEdit} className="space-y-4">
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase text-slate-400">
+                  Nome do Condomínio / Cliente *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editCondominio}
+                  onChange={(e) => setEditCondominio(e.target.value)}
+                  className="w-full rounded-xl border border-slate-700 bg-[#070D19] px-3.5 py-2.5 text-sm text-white outline-none focus:border-cyan-400"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-bold uppercase text-slate-400">
+                    Responsável / WhatsApp
+                  </label>
+                  <input
+                    type="text"
+                    value={editContato}
+                    onChange={(e) => setEditContato(e.target.value)}
+                    placeholder="(11) 99999-9999"
+                    className="w-full rounded-xl border border-slate-700 bg-[#070D19] px-3.5 py-2.5 text-sm text-white outline-none focus:border-cyan-400"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-bold uppercase text-slate-400">
+                    Plano Comercial
+                  </label>
+                  <select
+                    value={editPlano}
+                    onChange={(e) => setEditPlano(e.target.value as PlanoLicenca)}
+                    className="w-full rounded-xl border border-slate-700 bg-[#070D19] px-3.5 py-2.5 text-sm text-white outline-none focus:border-cyan-400"
+                  >
+                    <option value="MENSAL">MENSAL</option>
+                    <option value="ANUAL">ANUAL</option>
+                    <option value="VITALICIO">VITALÍCIO</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-bold uppercase text-slate-400">
+                    Validade Até
+                  </label>
+                  <input
+                    type="date"
+                    value={editValidade}
+                    onChange={(e) => setEditValidade(e.target.value)}
+                    className="w-full rounded-xl border border-slate-700 bg-[#070D19] px-3.5 py-2.5 text-sm text-white outline-none focus:border-cyan-400"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-bold uppercase text-slate-400">
+                    Observações
+                  </label>
+                  <input
+                    type="text"
+                    value={editObs}
+                    onChange={(e) => setEditObs(e.target.value)}
+                    className="w-full rounded-xl border border-slate-700 bg-[#070D19] px-3.5 py-2.5 text-sm text-white outline-none focus:border-cyan-400"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingLic(null)}
+                  className="rounded-xl border border-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-300 hover:bg-slate-800"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingEdit}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 px-5 py-2.5 text-sm font-extrabold text-slate-950 hover:brightness-110 disabled:opacity-60"
+                >
+                  <Save className="h-4 w-4" />
+                  {savingEdit ? 'Salvando...' : 'Salvar Alterações'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Confirmar Exclusão (Licença + Backups na Nuvem) */}
+      {deletingLic && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-red-500/50 bg-[#0F172A] p-6 shadow-2xl">
+            <div className="mb-3 flex items-center gap-2.5 text-red-400">
+              <AlertTriangle className="h-6 w-6" />
+              <h2 className="text-lg font-black text-white">Excluir Licença Permanentemente?</h2>
+            </div>
+            <p className="text-sm leading-relaxed text-slate-300">
+              Você está prestes a excluir a licença{' '}
+              <strong className="font-mono text-cyan-300">{deletingLic.codigo}</strong> de{' '}
+              <strong className="text-white">{deletingLic.condominio_nome}</strong>.
+            </p>
+            <div className="mt-3 rounded-xl border border-red-500/30 bg-red-950/50 p-3 text-xs text-red-200">
+              ⚠ Esta ação também <strong>apagará todos os veículos salvos no backup em nuvem</strong>{' '}
+              deste condomínio e bloqueará o computador vinculado na próxima verificação. Não pode ser desfeita.
+            </div>
+            <div className="mt-5 flex justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={deletingBusy}
+                onClick={() => setDeletingLic(null)}
+                className="rounded-xl border border-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-300 hover:bg-slate-800"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={deletingBusy}
+                onClick={handleConfirmDelete}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-red-600 px-5 py-2.5 text-sm font-extrabold text-white hover:bg-red-500 disabled:opacity-60"
+              >
+                <Trash2 className="h-4 w-4" />
+                {deletingBusy ? 'Excluindo...' : 'Sim, Excluir Tudo'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal Configurar WhatsApp Comercial do Site */}
       {showPortalModal && (
