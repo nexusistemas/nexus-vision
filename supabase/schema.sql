@@ -196,3 +196,43 @@ $$;
 
 REVOKE ALL ON FUNCTION public.validar_licenca_nexus(text, text, text) FROM public;
 GRANT EXECUTE ON FUNCTION public.validar_licenca_nexus(text, text, text) TO anon, authenticated;
+
+-- 4. Configurações públicas do Portal Web (WhatsApp comercial editável pelo /#/admin)
+CREATE TABLE IF NOT EXISTS public.config_portal (
+    id integer PRIMARY KEY CHECK (id = 1),
+    whatsapp_numero text NOT NULL DEFAULT '5511999999999',
+    whatsapp_mensagem text NOT NULL DEFAULT 'Olá! Tenho interesse em ativar o Nexus Vision na portaria do meu condomínio.',
+    atualizado_em timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO public.config_portal (id, whatsapp_numero, whatsapp_mensagem)
+VALUES (1, '5511999999999', 'Olá! Tenho interesse em ativar o Nexus Vision na portaria do meu condomínio.')
+ON CONFLICT (id) DO NOTHING;
+
+ALTER TABLE public.config_portal ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE public.config_portal FROM anon, public;
+GRANT SELECT ON TABLE public.config_portal TO anon, authenticated;
+GRANT INSERT, UPDATE ON TABLE public.config_portal TO authenticated;
+
+DROP POLICY IF EXISTS "public_select_config_portal" ON public.config_portal;
+CREATE POLICY "public_select_config_portal"
+    ON public.config_portal
+    FOR SELECT
+    TO anon, authenticated
+    USING (true);
+
+DROP POLICY IF EXISTS "admin_upsert_config_portal" ON public.config_portal;
+CREATE POLICY "admin_upsert_config_portal"
+    ON public.config_portal
+    FOR INSERT
+    TO authenticated
+    WITH CHECK ((SELECT auth.role()) = 'authenticated');
+
+DROP POLICY IF EXISTS "admin_update_config_portal" ON public.config_portal;
+CREATE POLICY "admin_update_config_portal"
+    ON public.config_portal
+    FOR UPDATE
+    TO authenticated
+    USING ((SELECT auth.role()) = 'authenticated')
+    WITH CHECK ((SELECT auth.role()) = 'authenticated');

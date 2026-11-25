@@ -19,6 +19,26 @@ export interface Licenca {
   criado_em: string;
 }
 
+export interface PortalConfig {
+  id: number;
+  whatsapp_numero: string;
+  whatsapp_mensagem: string;
+  atualizado_em?: string;
+}
+
+export const DEFAULT_WHATSAPP_MESSAGE =
+  'Olá! Tenho interesse em ativar o Nexus Vision na portaria do meu condomínio.';
+
+/** Normaliza número brasileiro para formato internacional wa.me (ex: 5511999998888). */
+export function normalizeWhatsAppNumber(raw: string): string {
+  const digits = (raw || '').replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.length === 10 || digits.length === 11) {
+    return `55${digits}`;
+  }
+  return digits;
+}
+
 export const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').trim();
 export const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 export const GITHUB_REPO = (import.meta.env.VITE_GITHUB_REPO || 'nexusistemas/nexus-vision').trim();

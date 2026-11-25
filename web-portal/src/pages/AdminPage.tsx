@@ -12,9 +12,11 @@ import {
   KeyRound,
   Lock,
   LogOut,
+  MessageCircle,
   Plus,
   RefreshCw,
   RotateCcw,
+  Save,
   Search,
   ShieldAlert,
   ShieldCheck,
@@ -23,10 +25,13 @@ import {
   X,
 } from 'lucide-react';
 import {
+  DEFAULT_WHATSAPP_MESSAGE,
+  WHATSAPP_NUMBER,
   generateLicenseCode,
   getValidityBadge,
   isPortariaOnline,
   isSupabaseConfigured,
+  normalizeWhatsAppNumber,
   supabase,
   type Licenca,
   type PlanoLicenca,
@@ -56,6 +61,12 @@ export function AdminPage() {
   const [newDias, setNewDias] = useState(30);
   const [newObs, setNewObs] = useState('');
   const [creating, setCreating] = useState(false);
+
+  // Modal Configurar WhatsApp Comercial do Site
+  const [showPortalModal, setShowPortalModal] = useState(false);
+  const [portalWhatsApp, setPortalWhatsApp] = useState(WHATSAPP_NUMBER);
+  const [portalMessage, setPortalMessage] = useState(DEFAULT_WHATSAPP_MESSAGE);
+  const [savingPortal, setSavingPortal] = useState(false);
 
   const notify = useCallback((msg: string) => {
     setToast(msg);
@@ -94,11 +105,53 @@ export function AdminPage() {
     setLicencas((data as Licenca[]) || []);
   }, [notify]);
 
+  const fetchPortalConfig = useCallback(async () => {
+    if (!supabase) return;
+    const { data } = await supabase
+      .from('config_portal')
+      .select('whatsapp_numero, whatsapp_mensagem')
+      .eq('id', 1)
+      .maybeSingle();
+    if (data) {
+      if (data.whatsapp_numero) setPortalWhatsApp(data.whatsapp_numero);
+      if (data.whatsapp_mensagem) setPortalMessage(data.whatsapp_mensagem);
+    }
+  }, []);
+
   useEffect(() => {
     if (session) {
       fetchLicencas();
+      fetchPortalConfig();
     }
-  }, [session, fetchLicencas]);
+  }, [session, fetchLicencas, fetchPortalConfig]);
+
+  const handleSavePortalConfig = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!supabase) return;
+    const normalized = normalizeWhatsAppNumber(portalWhatsApp);
+    if (normalized.length < 12) {
+      notify('Informe um número válido com DDD (ex: 11999998888 ou 5511999998888).');
+      return;
+    }
+    setSavingPortal(true);
+    const { error } = await supabase.from('config_portal').upsert(
+      {
+        id: 1,
+        whatsapp_numero: normalized,
+        whatsapp_mensagem: portalMessage.trim() || DEFAULT_WHATSAPP_MESSAGE,
+        atualizado_em: new Date().toISOString(),
+      },
+      { onConflict: 'id' }
+    );
+    setSavingPortal(false);
+    if (error) {
+      notify(`Erro ao salvar WhatsApp (rode o SQL da tabela config_portal no Supabase): ${error.message}`);
+      return;
+    }
+    setPortalWhatsApp(normalized);
+    setShowPortalModal(false);
+    notify(`WhatsApp comercial (${normalized}) atualizado no site!`);
+  };
 
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
@@ -388,6 +441,14 @@ export function AdminPage() {
 
           <div className="flex items-center gap-2">
             <button
+              onClick={() => setShowPortalModal(true)}
+              title="Configurar número do WhatsApp comercial exibido no site"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300 transition hover:bg-emerald-500/20 sm:text-sm"
+            >
+              <MessageCircle className="h-4 w-4" />
+              <span className="hidden sm:inline">WhatsApp Site</span>
+            </button>
+            <button
               onClick={openCreateModal}
               className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 px-3.5 py-2 text-xs font-extrabold text-slate-950 transition hover:brightness-110 sm:text-sm"
             >
@@ -622,6 +683,75 @@ export function AdminPage() {
           )}
         </div>
       </main>
+
+      {/* Modal Configurar WhatsApp Comercial do Site */}
+      {showPortalModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-[#0F172A] p-6 shadow-2xl">
+            <div className="mb-5 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <MessageCircle className="h-5 w-5 text-emerald-400" />
+                <h2 className="text-lg font-black text-white">WhatsApp Comercial do Site</h2>
+              </div>
+              <button
+                onClick={() => setShowPortalModal(false)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSavePortalConfig} className="space-y-4">
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase text-slate-400">
+                  Número do WhatsApp (com DDD) *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={portalWhatsApp}
+                  onChange={(e) => setPortalWhatsApp(e.target.value)}
+                  placeholder="Ex: (11) 99999-8888 ou 5511999998888"
+                  className="w-full rounded-xl border border-slate-700 bg-[#070D19] px-3.5 py-2.5 text-sm text-white outline-none focus:border-emerald-400"
+                />
+                <p className="mt-1 text-[11px] text-slate-400">
+                  Usado nos botões "Solicitar Licença Comercial", "Falar com Comercial" e "Suporte Comercial" da página inicial.
+                </p>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase text-slate-400">
+                  Mensagem Automática Inicial
+                </label>
+                <textarea
+                  rows={3}
+                  value={portalMessage}
+                  onChange={(e) => setPortalMessage(e.target.value)}
+                  className="w-full rounded-xl border border-slate-700 bg-[#070D19] px-3.5 py-2.5 text-sm text-white outline-none focus:border-emerald-400"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowPortalModal(false)}
+                  className="rounded-xl border border-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-300 hover:bg-slate-800"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingPortal}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-5 py-2.5 text-sm font-extrabold text-slate-950 hover:brightness-110 disabled:opacity-60"
+                >
+                  <Save className="h-4 w-4" />
+                  {savingPortal ? 'Salvando...' : 'Salvar Número'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Modal Gerar Nova Licença */}
       {showNewModal && (

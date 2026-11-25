@@ -14,7 +14,13 @@ import {
   Volume2,
   Zap,
 } from 'lucide-react';
-import { GITHUB_REPO, WHATSAPP_NUMBER } from '../lib/supabase';
+import {
+  DEFAULT_WHATSAPP_MESSAGE,
+  GITHUB_REPO,
+  WHATSAPP_NUMBER,
+  normalizeWhatsAppNumber,
+  supabase,
+} from '../lib/supabase';
 
 interface ReleaseInfo {
   version: string;
@@ -30,6 +36,28 @@ const FALLBACK_RELEASE: ReleaseInfo = {
 
 export function LandingPage() {
   const [release, setRelease] = useState<ReleaseInfo>(FALLBACK_RELEASE);
+  const [whatsappNumber, setWhatsappNumber] = useState<string>(WHATSAPP_NUMBER);
+  const [whatsappMessage, setWhatsappMessage] = useState<string>(DEFAULT_WHATSAPP_MESSAGE);
+
+  useEffect(() => {
+    let active = true;
+    if (supabase) {
+      supabase
+        .from('config_portal')
+        .select('whatsapp_numero, whatsapp_mensagem')
+        .eq('id', 1)
+        .maybeSingle()
+        .then(({ data }) => {
+          if (!active || !data) return;
+          const clean = normalizeWhatsAppNumber(data.whatsapp_numero || '');
+          if (clean) setWhatsappNumber(clean);
+          if (data.whatsapp_mensagem) setWhatsappMessage(data.whatsapp_mensagem);
+        });
+    }
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -57,9 +85,7 @@ export function LandingPage() {
     };
   }, []);
 
-  const whatsappUrl = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(
-    'Olá! Tenho interesse em ativar o Nexus Vision na portaria do meu condomínio.'
-  )}`;
+  const whatsappUrl = `https://wa.me/${whatsappNumber}?text=${encodeURIComponent(whatsappMessage)}`;
 
   const features = [
     {
