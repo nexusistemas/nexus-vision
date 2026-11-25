@@ -34,6 +34,50 @@ from config import (
 from core.plate_validator import ValidatedPlate, validate_brazilian_plate
 
 
+# Perfis de Distância / Nitidez para evitar leituras borradas ou de veículos muito longe
+QUALITY_PRESETS: dict[str, dict[str, Any]] = {
+    "LIVRE": {
+        "label": "Livre (Qualquer distância)",
+        "min_plate_width": 44,
+        "min_sharpness": 18.0,
+        "min_confidence": 0.55,
+    },
+    "MEDIA": {
+        "label": "Média (Balanceada)",
+        "min_plate_width": 68,
+        "min_sharpness": 45.0,
+        "min_confidence": 0.72,
+    },
+    "PERTO": {
+        "label": "Perto / Nítida (Recomendado)",
+        "min_plate_width": 92,
+        "min_sharpness": 75.0,
+        "min_confidence": 0.80,
+    },
+    "RIGOROSA": {
+        "label": "Muito Perto / Rigorosa",
+        "min_plate_width": 120,
+        "min_sharpness": 115.0,
+        "min_confidence": 0.87,
+    },
+}
+DEFAULT_QUALITY_PRESET = "PERTO"
+
+
+def measure_plate_sharpness(crop_bgr: np.ndarray) -> float:
+    """Mede a nitidez (foco) do recorte da placa via variância do Laplaciano normalizada."""
+    if crop_bgr is None or crop_bgr.size == 0:
+        return 0.0
+    h, w = crop_bgr.shape[:2]
+    if h < 8 or w < 16:
+        return 0.0
+    target_h = 48
+    target_w = max(24, int(round((w / float(h)) * target_h)))
+    resized = cv2.resize(crop_bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
 def resolve_models_root() -> Path:
     """
     Resolve a pasta local dos modelos ONNX, compatível tanto com execução em
@@ -143,6 +187,12 @@ class ALPREngineWorker(QThread):
         self._high_confidence = max(0.50, min(0.99, float(high_confidence)))
         self._enable_clahe = bool(enable_clahe)
 
+        # Filtro de distância/nitidez (ignora placas longe ou desfocadas)
+        preset = QUALITY_PRESETS[DEFAULT_QUALITY_PRESET]
+        self._min_plate_width: int = int(preset["min_plate_width"])
+        self._min_sharpness: float = float(preset["min_sharpness"])
+        self._min_confidence: float = float(preset["min_confidence"])
+
         # Histórico circular dos últimos N frames analisados (cada item = set de placas válidas)
         self._recent_votes: deque[set[str]] = deque(maxlen=self._vote_window_size)
         # Mapa placa -> timestamp monotonic da última confirmação registrada
@@ -180,6 +230,15 @@ class ALPREngineWorker(QThread):
     def set_clahe_enabled(self, enabled: bool) -> None:
         with self._cond:
             self._enable_clahe = bool(enabled)
+
+    def set_quality_preset(self, preset_key: str) -> None:
+        """Ajusta filtro de distância (largura mínima px), nitidez (Laplaciano) e confiança mínima."""
+        preset = QUALITY_PRESETS.get(preset_key.upper(), QUALITY_PRESETS[DEFAULT_QUALITY_PRESET])
+        with self._cond:
+            self._min_plate_width = int(preset["min_plate_width"])
+            self._min_sharpness = float(preset["min_sharpness"])
+            self._min_confidence = float(preset["min_confidence"])
+            self._recent_votes.clear()
 
     def clear_cooldown(self) -> None:
         with self._cond:
@@ -334,6 +393,11 @@ class ALPREngineWorker(QThread):
         overlay_detections: list[dict[str, Any]] = []
         validated_candidates: list[tuple[ValidatedPlate, float, float, tuple[int, int, int, int]]] = []
 
+        with self._cond:
+            min_plate_w = self._min_plate_width
+            min_sharp = self._min_sharpness
+            min_conf = self._min_confidence
+
         for item in results:
             det = getattr(item, "detection", None)
             ocr = getattr(item, "ocr", None)
@@ -347,6 +411,37 @@ class ALPREngineWorker(QThread):
             y2 = min(h - 1, int(bbox_obj.y2))
             bbox = (x1, y1, x2, y2)
             det_conf = float(det.confidence)
+            plate_w = x2 - x1
+
+            # 1) Filtro de distância (ignora placas pequenas/longe na rua)
+            if plate_w < min_plate_w:
+                overlay_detections.append(
+                    {
+                        "bbox": bbox,
+                        "plate": f"LONGE ({plate_w}px)",
+                        "confidence": det_conf,
+                        "valid": False,
+                        "too_far": True,
+                        "in_cooldown": False,
+                    }
+                )
+                continue
+
+            # 2) Filtro de nitidez/foco (ignora placas tremidas ou borradas)
+            crop_bgr = frame_bgr[y1:y2, x1:x2]
+            sharpness = measure_plate_sharpness(crop_bgr)
+            if sharpness < min_sharp:
+                overlay_detections.append(
+                    {
+                        "bbox": bbox,
+                        "plate": "AGUARDANDO FOCO...",
+                        "confidence": det_conf,
+                        "valid": False,
+                        "too_far": True,
+                        "in_cooldown": False,
+                    }
+                )
+                continue
 
             if ocr is None or not getattr(ocr, "text", ""):
                 overlay_detections.append(
@@ -362,6 +457,21 @@ class ALPREngineWorker(QThread):
 
             ocr_conf, char_confs = self._extract_ocr_confidence(ocr.confidence)
             combined_conf = float(min(1.0, (det_conf * 0.35) + (ocr_conf * 0.65)))
+
+            # 3) Filtro de confiança mínima (descarta chutes imprecisos)
+            if combined_conf < min_conf:
+                overlay_detections.append(
+                    {
+                        "bbox": bbox,
+                        "plate": f"BAIXA CONF. ({int(round(combined_conf * 100))}%)",
+                        "confidence": combined_conf,
+                        "valid": False,
+                        "too_far": True,
+                        "in_cooldown": False,
+                    }
+                )
+                continue
+
             validated = validate_brazilian_plate(
                 raw_text=ocr.text,
                 confidence=ocr_conf,

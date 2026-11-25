@@ -339,15 +339,22 @@ class ScreenCaptureWorker(QThread):
             plate_txt = str(det.get("plate") or "")
             conf = float(det.get("confidence") or 0.0)
             is_valid = bool(det.get("valid", False))
+            too_far = bool(det.get("too_far", False))
 
-            if plate_txt in hints:
+            if too_far:
+                box_color = (160, 130, 100)  # BGR cinza-azulado discreto (aguardando aproximação/foco)
+                thickness = 2
+            elif plate_txt in hints:
                 box_color = hints[plate_txt]
+                thickness = 3
             elif is_valid:
                 box_color = (129, 185, 16)  # BGR verde esmeralda (#10B981)
+                thickness = 3
             else:
                 box_color = (11, 158, 245)  # BGR âmbar (#F59E0B)
+                thickness = 2
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 3)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, thickness)
 
             tag = f"{plate_txt} {int(round(conf * 100))}%" if is_valid else plate_txt
             font_s = 0.62 if w >= 420 else 0.48

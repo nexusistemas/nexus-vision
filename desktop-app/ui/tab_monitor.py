@@ -1,23 +1,22 @@
 """
-Aba 1 — Monitoramento Ao Vivo do Nexus Vision (Etapa 2: IA ALPR Offline + Tempo Real).
-Integra captura ROI (~15 FPS), detector de movimento, motor ALPR ONNX CPU,
-votação/cooldown, alertas sonoros Windows, Card Gigante de Status (com alerta
-piscante para bloqueados e cadastro rápido) e lista lateral das últimas passagens.
+Aba 1 — Monitoramento Ao Vivo do Nexus Vision (Produção 24h).
+Integra captura ROI (~15 FPS), detector de movimento, filtro de distância/nitidez,
+motor ALPR ONNX CPU, votação/cooldown, alertas sonoros Windows, Card Gigante de Status
+limpo com destaque máximo para Morador/Casa/Veículo e lista lateral das últimas passagens.
 """
 
 from __future__ import annotations
 
-import random
 from datetime import datetime
 from typing import Any, Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -41,7 +40,12 @@ from config import (
     DEFAULT_SOUND_ENABLED,
     MAX_RECENT_PASSAGES,
 )
-from core.alpr_engine import ALPREngineWorker, save_alpr_capture
+from core.alpr_engine import (
+    DEFAULT_QUALITY_PRESET,
+    QUALITY_PRESETS,
+    ALPREngineWorker,
+    save_alpr_capture,
+)
 from core.database import DatabaseManager, format_plate_display, normalize_plate
 from core.license_manager import LicenseStatus
 from core.screen_capture import ScreenCaptureWorker
@@ -57,7 +61,7 @@ STATUS_THEME = {
         "badge_bg": "#059669",
         "accent": "#34D399",
         "short": "AUTORIZADO",
-        "bgr": (129, 185, 16),  # BGR verde esmeralda
+        "bgr": (129, 185, 16),
     },
     ACCESS_STATUS_LIBERADO_VISITANTE: {
         "title": "VISITANTE AUTORIZADO",
@@ -66,7 +70,7 @@ STATUS_THEME = {
         "badge_bg": "#0284C7",
         "accent": "#7DD3FC",
         "short": "VISITANTE",
-        "bgr": (248, 189, 56),  # BGR azul/ciano
+        "bgr": (248, 189, 56),
     },
     ACCESS_STATUS_NAO_CADASTRADO: {
         "title": "NÃO CADASTRADO / VISITANTE",
@@ -75,7 +79,7 @@ STATUS_THEME = {
         "badge_bg": "#D97706",
         "accent": "#FCD34D",
         "short": "NÃO CADASTRADO",
-        "bgr": (11, 158, 245),  # BGR âmbar
+        "bgr": (11, 158, 245),
     },
     ACCESS_STATUS_BLOQUEADO: {
         "title": "ALERTA: VEÍCULO BLOQUEADO",
@@ -85,7 +89,7 @@ STATUS_THEME = {
         "badge_bg": "#DC2626",
         "accent": "#FCA5A5",
         "short": "BLOQUEADO",
-        "bgr": (68, 68, 239),  # BGR vermelho alerta
+        "bgr": (68, 68, 239),
     },
     ACCESS_STATUS_EXPIRADO: {
         "title": "VISITANTE EXPIRADO",
@@ -94,7 +98,7 @@ STATUS_THEME = {
         "badge_bg": "#EA580C",
         "accent": "#FDBA74",
         "short": "EXPIRADO",
-        "bgr": (22, 115, 249),  # BGR laranja alerta
+        "bgr": (22, 115, 249),
     },
 }
 
@@ -166,76 +170,99 @@ class MonitorTab(QWidget):
         lb_lay.addWidget(btn_go_license)
         root.addWidget(self.license_banner)
 
-        # --- Barra de Controles da Câmera + IA ---
+        # --- Barra de Controles da Câmera + IA (2 linhas compactas ou linha única limpa) ---
         toolbar_card = QFrame()
         toolbar_card.setProperty("card", "true")
         tb_layout = QHBoxLayout(toolbar_card)
         tb_layout.setContentsMargins(12, 9, 12, 9)
-        tb_layout.setSpacing(10)
+        tb_layout.setSpacing(9)
 
         self.btn_select_roi = QPushButton("⌖  Selecionar Câmera")
         self.btn_select_roi.setProperty("variant", "primary")
         self.btn_select_roi.setMinimumHeight(36)
         self.btn_select_roi.clicked.connect(self._open_roi_selector)
 
-        self.btn_toggle_capture = QPushButton("▶  Iniciar Captura")
+        self.btn_toggle_capture = QPushButton("▶  Iniciar")
         self.btn_toggle_capture.setProperty("variant", "success")
         self.btn_toggle_capture.setMinimumHeight(36)
-        self.btn_toggle_capture.setMinimumWidth(138)
+        self.btn_toggle_capture.setMinimumWidth(112)
         self.btn_toggle_capture.clicked.connect(self._toggle_capture)
 
         self.btn_scan_now = QPushButton("🔍  Ler Agora")
         self.btn_scan_now.setMinimumHeight(36)
         self.btn_scan_now.setToolTip(
-            "Envia o frame atual da câmera imediatamente para a IA ALPR (útil para testar em imagem/vídeo parado)"
+            "Envia o frame atual imediatamente para a IA ALPR (útil em imagem ou vídeo parado)"
         )
         self.btn_scan_now.clicked.connect(self._force_alpr_scan)
 
-        # Sensibilidade de movimento
-        lbl_sens_title = QLabel("Sensib.:")
+        # Controle de Distância / Nitidez da Placa (evita tentar ler carros longe/borrados!)
+        lbl_qual = QLabel("Nitidez:")
+        lbl_qual.setProperty("muted", "true")
+        self.cmb_quality = QComboBox()
+        self.cmb_quality.setMinimumHeight(34)
+        self.cmb_quality.setFixedWidth(185)
+        self.cmb_quality.setToolTip(
+            "Controla o quão perto e nítida a placa precisa estar para a IA confirmar a leitura.\n"
+            "Use 'Perto / Nítida' ou 'Muito Perto' para ignorar carros distantes na rua."
+        )
+        default_idx = 0
+        for idx, (key, meta) in enumerate(QUALITY_PRESETS.items()):
+            self.cmb_quality.addItem(meta["label"], key)
+            if key == DEFAULT_QUALITY_PRESET:
+                default_idx = idx
+        self.cmb_quality.setCurrentIndex(default_idx)
+        self.cmb_quality.currentIndexChanged.connect(self._on_quality_changed)
+
+        # Sensibilidade de movimento (para acordar a IA)
+        lbl_sens_title = QLabel("Mov.:")
         lbl_sens_title.setProperty("muted", "true")
         self.slider_sensitivity = QSlider(Qt.Orientation.Horizontal)
         self.slider_sensitivity.setRange(1, 100)
         self.slider_sensitivity.setValue(DEFAULT_MOTION_SENSITIVITY)
-        self.slider_sensitivity.setFixedWidth(95)
+        self.slider_sensitivity.setFixedWidth(74)
+        self.slider_sensitivity.setToolTip(
+            "Sensibilidade de movimento na tela para acordar o detector (não altera a distância da placa)"
+        )
         self.slider_sensitivity.valueChanged.connect(self._on_sensitivity_changed)
 
         self.lbl_sens_val = QLabel(f"{DEFAULT_MOTION_SENSITIVITY}%")
-        self.lbl_sens_val.setFixedWidth(32)
+        self.lbl_sens_val.setFixedWidth(30)
         self.lbl_sens_val.setStyleSheet("color: #38BDF8; font-weight: 700; background: transparent;")
 
         # Tempo de Cooldown (s)
-        lbl_cd = QLabel("Cooldown:")
+        lbl_cd = QLabel("Espera:")
         lbl_cd.setProperty("muted", "true")
         self.spin_cooldown = QSpinBox()
         self.spin_cooldown.setRange(5, 300)
         self.spin_cooldown.setValue(DEFAULT_COOLDOWN_SECONDS)
         self.spin_cooldown.setSuffix(" s")
-        self.spin_cooldown.setFixedWidth(78)
+        self.spin_cooldown.setFixedWidth(72)
         self.spin_cooldown.setToolTip(
-            "Tempo (segundos) para ignorar leituras repetidas da mesma placa enquanto o veículo aguarda o portão"
+            "Cooldown (segundos) para não repetir a mesma placa enquanto o carro aguarda o portão abrir"
         )
         self.spin_cooldown.valueChanged.connect(self._on_cooldown_changed)
 
         # Toggle Som Ativado / Mudo
-        self.btn_sound_toggle = QPushButton("🔊  Som Ativo")
+        self.btn_sound_toggle = QPushButton("🔊 Som")
         self.btn_sound_toggle.setCheckable(True)
         self.btn_sound_toggle.setChecked(DEFAULT_SOUND_ENABLED)
         self.btn_sound_toggle.setMinimumHeight(36)
-        self.btn_sound_toggle.setFixedWidth(118)
+        self.btn_sound_toggle.setFixedWidth(96)
         self.btn_sound_toggle.toggled.connect(self._on_sound_toggled)
         self._refresh_sound_button_style(DEFAULT_SOUND_ENABLED)
 
         self.lbl_fps = QLabel("0.0 FPS")
         self.lbl_fps.setStyleSheet(
             "color: #94A3B8; background-color: #0B1324; border: 1px solid #1E293B; "
-            "border-radius: 6px; padding: 5px 9px; font-family: Consolas; font-weight: 700;"
+            "border-radius: 6px; padding: 5px 8px; font-family: Consolas; font-weight: 700;"
         )
 
         tb_layout.addWidget(self.btn_select_roi)
         tb_layout.addWidget(self.btn_toggle_capture)
         tb_layout.addWidget(self.btn_scan_now)
         tb_layout.addStretch(1)
+        tb_layout.addWidget(lbl_qual)
+        tb_layout.addWidget(self.cmb_quality)
         tb_layout.addWidget(lbl_sens_title)
         tb_layout.addWidget(self.slider_sensitivity)
         tb_layout.addWidget(self.lbl_sens_val)
@@ -281,12 +308,12 @@ class MonitorTab(QWidget):
 
         self.lbl_video = QLabel(
             "Nenhuma câmera capturando no momento.\n\n"
-            "1. Abra o software das suas câmeras (Intelbras, Hikvision, YouTube/VMS, etc.)\n"
-            "2. Clique em 'Selecionar Câmera' e recorte a imagem na tela\n"
-            "3. A IA ALPR ONNX lerá placas Mercosul e Antigas automaticamente ao detectar movimento"
+            "1. Abra o software das suas câmeras (Intelbras, Hikvision, navegador, etc.)\n"
+            "2. Clique em 'Selecionar Câmera' e recorte o vídeo da entrada\n"
+            "3. A IA lerá automaticamente assim que a placa aproximar e ficar nítida"
         )
         self.lbl_video.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_video.setMinimumHeight(280)
+        self.lbl_video.setMinimumHeight(270)
         self.lbl_video.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.lbl_video.setStyleSheet(
             "background-color: #070D19; border: 1px dashed #26354D; border-radius: 10px; "
@@ -315,97 +342,92 @@ class MonitorTab(QWidget):
 
         left_col.addWidget(preview_card, 3)
 
-        # 2) Card Gigante de Status de Acesso + Ação Rápida + Simulação
+        # 2) Card Gigante de Status de Acesso (Limpo, sem botões de simulação, alta visibilidade!)
         self.status_card = QFrame()
         self.status_card.setObjectName("GiantStatusCard")
-        self.status_card.setMinimumHeight(192)
+        self.status_card.setMinimumHeight(205)
         sc_layout = QVBoxLayout(self.status_card)
-        sc_layout.setContentsMargins(18, 14, 18, 14)
-        sc_layout.setSpacing(10)
+        sc_layout.setContentsMargins(20, 16, 20, 16)
+        sc_layout.setSpacing(14)
 
+        # Linha superior: Kicker + Título Gigante | Placa Mercosul Gigante
         sc_top = QHBoxLayout()
         sc_top.setSpacing(16)
 
         status_text_col = QVBoxLayout()
         status_text_col.setSpacing(4)
-        self.lbl_status_kicker = QLabel("MOTOR ALPR OFFLINE — VERIFICAÇÃO DE ACESSO EM TEMPO REAL")
+        self.lbl_status_kicker = QLabel("MONITORAMENTO VEICULAR EM TEMPO REAL • IA ONNX OFFLINE")
         self.lbl_status_kicker.setStyleSheet(
             "color: #94A3B8; font-size: 11px; font-weight: 700; letter-spacing: 1px; background: transparent;"
         )
-        self.lbl_status_headline = QLabel("AGUARDANDO LEITURA DE PLACA")
+        self.lbl_status_headline = QLabel("AGUARDANDO VEÍCULO NA PORTARIA")
         self.lbl_status_headline.setStyleSheet(
-            "color: #F8FAFC; font-size: 24px; font-weight: 900; letter-spacing: 0.5px; background: transparent;"
+            "color: #F8FAFC; font-size: 27px; font-weight: 900; letter-spacing: 0.6px; background: transparent;"
         )
-        self.lbl_status_details = QLabel(
-            "Posicione a câmera sobre a entrada de veículos — a leitura automática disparará no movimento"
-        )
-        self.lbl_status_details.setWordWrap(True)
-        self.lbl_status_details.setStyleSheet(
-            "color: #CBD5E1; font-size: 13px; background: transparent;"
-        )
-
-        # Botão rápido de cadastro (visível apenas quando placa NÃO CADASTRADA)
-        self.btn_quick_register = QPushButton("➕  Cadastrar Esta Placa Agora")
-        self.btn_quick_register.setProperty("variant", "primary")
-        self.btn_quick_register.setFixedHeight(34)
-        self.btn_quick_register.setVisible(False)
-        self.btn_quick_register.clicked.connect(self._on_quick_register_clicked)
-
         status_text_col.addWidget(self.lbl_status_kicker)
         status_text_col.addWidget(self.lbl_status_headline)
-        status_text_col.addWidget(self.lbl_status_details)
-        quick_row = QHBoxLayout()
-        quick_row.addWidget(self.btn_quick_register)
-        quick_row.addStretch()
-        status_text_col.addLayout(quick_row)
 
-        # Placa visual estilo Mercosul
+        # Placa visual estilo Mercosul em destaque máximo
         self.lbl_plate_badge = QLabel("———-————")
         self.lbl_plate_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_plate_badge.setFixedSize(205, 70)
+        self.lbl_plate_badge.setFixedSize(226, 74)
         self.lbl_plate_badge.setStyleSheet(
             "background-color: #0F172A; color: #F8FAFC; border: 2px solid #334155; "
-            "border-top: 10px solid #1D4ED8; border-radius: 8px; "
-            "font-family: Consolas, 'Segoe UI', monospace; font-size: 26px; font-weight: 900; letter-spacing: 2px;"
+            "border-top: 11px solid #1D4ED8; border-radius: 8px; "
+            "font-family: Consolas, 'Segoe UI', monospace; font-size: 28px; font-weight: 900; letter-spacing: 2px;"
         )
 
         sc_top.addLayout(status_text_col, 1)
         sc_top.addWidget(self.lbl_plate_badge)
         sc_layout.addLayout(sc_top)
 
-        # Barra compacta de simulação manual
-        sim_bar = QHBoxLayout()
-        sim_bar.setSpacing(8)
+        # Linha inferior: 3 Blocos Grandes de Identificação (MORADOR | CASA / UNIDADE | VEÍCULO)
+        self.info_blocks_container = QWidget()
+        self.info_blocks_container.setStyleSheet("background: transparent;")
+        blocks_row = QHBoxLayout(self.info_blocks_container)
+        blocks_row.setContentsMargins(0, 0, 0, 0)
+        blocks_row.setSpacing(12)
 
-        self.input_sim_plate = QLineEdit()
-        self.input_sim_plate.setPlaceholderText("Simular placa manual (ex: ABC1D23)...")
-        self.input_sim_plate.setMaxLength(8)
-        self.input_sim_plate.setFixedWidth(215)
-        self.input_sim_plate.returnPressed.connect(self._simulate_typed_plate)
+        self.box_resident, self.lbl_val_resident = self._make_resident_info_block(
+            "👤  MORADOR / RESPONSÁVEL", "—", "#FFFFFF", 20
+        )
+        self.box_unit, self.lbl_val_unit = self._make_resident_info_block(
+            "🏠  CASA / UNIDADE", "—", "#6EE7B7", 20
+        )
+        self.box_car, self.lbl_val_car = self._make_resident_info_block(
+            "🚗  VEÍCULO / COR", "—", "#E2E8F0", 18
+        )
 
-        btn_sim_custom = QPushButton("⚡ Simular")
-        btn_sim_custom.setProperty("variant", "primary")
-        btn_sim_custom.clicked.connect(self._simulate_typed_plate)
+        blocks_row.addWidget(self.box_resident, 4)
+        blocks_row.addWidget(self.box_unit, 3)
+        blocks_row.addWidget(self.box_car, 3)
+        self.info_blocks_container.setVisible(False)
+        sc_layout.addWidget(self.info_blocks_container)
 
-        btn_sim_morador = QPushButton("✓ Morador")
-        btn_sim_morador.setProperty("variant", "success")
-        btn_sim_morador.clicked.connect(self._simulate_resident)
+        # Mensagem auxiliar + Botão rápido de cadastro (para estado inicial, bloqueado ou não cadastrado)
+        self.footer_alert_row = QWidget()
+        self.footer_alert_row.setStyleSheet("background: transparent;")
+        fa_lay = QHBoxLayout(self.footer_alert_row)
+        fa_lay.setContentsMargins(0, 0, 0, 0)
+        fa_lay.setSpacing(12)
 
-        btn_sim_unreg = QPushButton("⚠ Não Cad.")
-        btn_sim_unreg.setProperty("variant", "warning")
-        btn_sim_unreg.clicked.connect(self._simulate_unregistered)
+        self.lbl_status_details = QLabel(
+            "Posicione a câmera sobre a entrada — os dados do morador, casa e carro aparecerão aqui em destaque."
+        )
+        self.lbl_status_details.setWordWrap(True)
+        self.lbl_status_details.setStyleSheet(
+            "color: #CBD5E1; font-size: 14px; font-weight: 600; background: transparent;"
+        )
 
-        btn_sim_blocked = QPushButton("⛔ Bloqueado")
-        btn_sim_blocked.setProperty("variant", "danger")
-        btn_sim_blocked.clicked.connect(self._simulate_blocked)
+        self.btn_quick_register = QPushButton("➕  Cadastrar Esta Placa Agora")
+        self.btn_quick_register.setProperty("variant", "primary")
+        self.btn_quick_register.setMinimumHeight(40)
+        self.btn_quick_register.setVisible(False)
+        self.btn_quick_register.clicked.connect(self._on_quick_register_clicked)
 
-        sim_bar.addWidget(self.input_sim_plate)
-        sim_bar.addWidget(btn_sim_custom)
-        sim_bar.addStretch()
-        sim_bar.addWidget(btn_sim_morador)
-        sim_bar.addWidget(btn_sim_unreg)
-        sim_bar.addWidget(btn_sim_blocked)
-        sc_layout.addLayout(sim_bar)
+        fa_lay.addWidget(self.lbl_status_details, 1)
+        fa_lay.addWidget(self.btn_quick_register)
+        sc_layout.addWidget(self.footer_alert_row)
 
         self._apply_idle_status_style()
         left_col.addWidget(self.status_card, 0)
@@ -452,6 +474,31 @@ class MonitorTab(QWidget):
         root.addLayout(body, 1)
 
     @staticmethod
+    def _make_resident_info_block(
+        title: str, initial: str, value_color: str, font_px: int
+    ) -> tuple[QFrame, QLabel]:
+        box = QFrame()
+        box.setStyleSheet(
+            "QFrame { background-color: rgba(7, 13, 25, 0.55); border: 1px solid rgba(255, 255, 255, 0.14); "
+            "border-radius: 10px; }"
+        )
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(4)
+        lbl_t = QLabel(title)
+        lbl_t.setStyleSheet(
+            "color: #94A3B8; font-size: 11px; font-weight: 800; letter-spacing: 0.7px; background: transparent; border: none;"
+        )
+        lbl_v = QLabel(initial)
+        lbl_v.setWordWrap(True)
+        lbl_v.setStyleSheet(
+            f"color: {value_color}; font-size: {font_px}px; font-weight: 900; background: transparent; border: none;"
+        )
+        lay.addWidget(lbl_t)
+        lay.addWidget(lbl_v)
+        return box, lbl_v
+
+    @staticmethod
     def _make_kpi_card(label: str, initial: str, color: str) -> tuple[QFrame, QLabel]:
         frame = QFrame()
         frame.setProperty("card", "true")
@@ -467,7 +514,7 @@ class MonitorTab(QWidget):
         return frame, lbl_v
 
     # =========================================================================
-    # MOTOR DE IA ALPR (ETAPA 2)
+    # MOTOR DE IA ALPR
     # =========================================================================
 
     def _start_alpr_engine(self) -> None:
@@ -475,11 +522,17 @@ class MonitorTab(QWidget):
             cooldown_seconds=self.spin_cooldown.value(),
             parent=self,
         )
+        self._alpr_worker.set_quality_preset(self.cmb_quality.currentData() or DEFAULT_QUALITY_PRESET)
         self._alpr_worker.engine_status.connect(self._on_alpr_status)
         self._alpr_worker.detections_updated.connect(self._on_alpr_detections)
         self._alpr_worker.plate_confirmed.connect(self._on_alpr_plate_confirmed)
         self._alpr_worker.inference_metrics.connect(self._on_alpr_metrics)
         self._alpr_worker.start()
+
+    def _on_quality_changed(self) -> None:
+        preset_key = self.cmb_quality.currentData() or DEFAULT_QUALITY_PRESET
+        if self._alpr_worker:
+            self._alpr_worker.set_quality_preset(str(preset_key))
 
     def _on_alpr_status(self, message: str, ready: bool) -> None:
         self._alpr_ready = ready
@@ -524,7 +577,6 @@ class MonitorTab(QWidget):
                 f"⚠ Motor IA ALPR pausado ({status.mode}): {status.message}"
             )
             self.license_banner.setVisible(True)
-            # Reflete o bloqueio também no Card Gigante de Status para ficar inconfundível
             self._blink_timer.stop()
             self.status_card.setStyleSheet(
                 "QFrame#GiantStatusCard { background-color: #450A12; border: 2px solid #EF4444; border-radius: 14px; }"
@@ -534,6 +586,8 @@ class MonitorTab(QWidget):
                 "color: #FCA5A5; font-size: 11px; font-weight: 700; letter-spacing: 0.8px; background: transparent;"
             )
             self.lbl_status_headline.setText("LICENÇA BLOQUEADA / PENDENTE")
+            self.info_blocks_container.setVisible(False)
+            self.footer_alert_row.setVisible(True)
             self.lbl_status_details.setText(status.message)
             self.lbl_plate_badge.setText("BLOQUEADO")
             self.btn_quick_register.setVisible(False)
@@ -544,7 +598,6 @@ class MonitorTab(QWidget):
         self.lbl_last_trigger.setText(f"IA ALPR: {elapsed_ms:.0f} ms ({now_str})")
 
     def _on_alpr_detections(self, detections: list[dict[str, Any]]) -> None:
-        """Enriquece as detecções ao vivo com cor do banco e envia para o overlay do vídeo."""
         if not self._worker:
             return
         for det in detections:
@@ -557,10 +610,6 @@ class MonitorTab(QWidget):
         self._worker.set_alpr_detections(detections, ttl_sec=1.6)
 
     def _on_alpr_plate_confirmed(self, payload: dict[str, Any]) -> None:
-        """
-        Fluxo completo ao confirmar placa via votação/alta confiança (fora do cooldown):
-        SQLite -> Regras de negócio -> Captura YYYY-MM-DD -> Histórico -> Card Gigante + Som.
-        """
         plate = payload["plate"]
         confidence = float(payload.get("confidence", 0.0))
         pattern = payload.get("pattern", "")
@@ -570,11 +619,9 @@ class MonitorTab(QWidget):
         status, vehicle = self.db.evaluate_plate_access(plate)
         theme = STATUS_THEME.get(status, STATUS_THEME[ACCESS_STATUS_NAO_CADASTRADO])
 
-        # Atualiza cor da bounding box ao vivo
         if self._worker:
             self._worker.set_plate_color_hint(plate, theme["bgr"])
 
-        # Salva captura do veículo/placa em data/captures/YYYY-MM-DD/
         img_path = (
             save_alpr_capture(frame_bgr, plate, bbox=bbox, box_color_bgr=theme["bgr"])
             if frame_bgr is not None
@@ -596,7 +643,6 @@ class MonitorTab(QWidget):
         self.access_logged.emit()
 
     def _force_alpr_scan(self) -> None:
-        """Dispara leitura ALPR sob demanda no frame atual (útil para validar placas estáticas)."""
         if not self._license_allowed:
             QMessageBox.warning(
                 self,
@@ -608,7 +654,7 @@ class MonitorTab(QWidget):
             QMessageBox.information(
                 self,
                 "Captura Inativa",
-                "Inicie a captura de uma área da tela primeiro para testar a leitura ALPR.",
+                "Inicie a captura de uma área da tela primeiro para ler a placa.",
             )
             return
         if not self._alpr_worker or not self._alpr_worker.is_ready():
@@ -620,10 +666,8 @@ class MonitorTab(QWidget):
             return
         frame = self._worker.get_latest_bgr_frame()
         if frame is not None:
-            # Limpa cooldown pontualmente para permitir re-teste imediato pelo botão manual
             self._alpr_worker.clear_cooldown()
             self._alpr_worker.submit_frame(frame)
-            # Envia um segundo frame logo em seguida para satisfazer votação >= 2 em imagem parada
             QTimer.singleShot(250, self._submit_second_manual_frame)
 
     def _submit_second_manual_frame(self) -> None:
@@ -642,12 +686,12 @@ class MonitorTab(QWidget):
 
     def _refresh_sound_button_style(self, enabled: bool) -> None:
         if enabled:
-            self.btn_sound_toggle.setText("🔊  Som Ativo")
+            self.btn_sound_toggle.setText("🔊 Som")
             self.btn_sound_toggle.setStyleSheet(
                 "background-color: #0E2A3F; color: #38BDF8; border: 1px solid #0891B2; border-radius: 8px;"
             )
         else:
-            self.btn_sound_toggle.setText("🔇  Mudo")
+            self.btn_sound_toggle.setText("🔇 Mudo")
             self.btn_sound_toggle.setStyleSheet(
                 "background-color: #1E293B; color: #94A3B8; border: 1px solid #334155; border-radius: 8px;"
             )
@@ -770,7 +814,6 @@ class MonitorTab(QWidget):
         self._update_capture_button_ui(running=False, paused=False)
 
     def shutdown(self) -> None:
-        """Encerra ordenadamente captura de tela, motor ALPR ONNX e timers."""
         self._blink_timer.stop()
         self.stop_capture()
         if self._alpr_worker is not None:
@@ -780,13 +823,13 @@ class MonitorTab(QWidget):
 
     def _update_capture_button_ui(self, running: bool, paused: bool) -> None:
         if running and not paused:
-            self.btn_toggle_capture.setText("⏸  Pausar Captura")
+            self.btn_toggle_capture.setText("⏸  Pausar")
             self.btn_toggle_capture.setProperty("variant", "warning")
         elif running and paused:
-            self.btn_toggle_capture.setText("▶  Retomar Captura")
+            self.btn_toggle_capture.setText("▶  Retomar")
             self.btn_toggle_capture.setProperty("variant", "success")
         else:
-            self.btn_toggle_capture.setText("▶  Iniciar Captura")
+            self.btn_toggle_capture.setText("▶  Iniciar")
             self.btn_toggle_capture.setProperty("variant", "success")
 
         self.btn_toggle_capture.style().unpolish(self.btn_toggle_capture)
@@ -846,7 +889,7 @@ class MonitorTab(QWidget):
         self.lbl_last_trigger.setText(f"Gatilho movimento: {now_str} ({motion_pct:.0f}%)")
 
     def _on_capture_error(self, message: str) -> None:
-        self.lbl_motion_pill.setText("● RECONNECTANDO")
+        self.lbl_motion_pill.setText("● RECONECTANDO")
         self.lbl_motion_pill.setStyleSheet(
             "color: #FCA5A5; background-color: #450A0A; border: 1px solid #EF4444; "
             "border-radius: 12px; padding: 3px 10px; font-size: 11px; font-weight: 700;"
@@ -864,7 +907,7 @@ class MonitorTab(QWidget):
             self.lbl_fps.setText("PAUSADA")
 
     # =========================================================================
-    # CARD GIGANTE DE STATUS, ALERTA PISCANTE & CADASTRO RÁPIDO
+    # CARD GIGANTE DE STATUS (ALTA VISIBILIDADE PARA PORTARIA)
     # =========================================================================
 
     def _apply_idle_status_style(self) -> None:
@@ -888,7 +931,6 @@ class MonitorTab(QWidget):
         plate_raw = normalize_plate(record.get("placa", ""))
         plate_disp = format_plate_display(plate_raw)
 
-        # Controle do pisca-pisca para BLOQUEADO
         if status == ACCESS_STATUS_BLOQUEADO:
             self._blink_state = False
             self._blink_timer.start()
@@ -914,40 +956,51 @@ class MonitorTab(QWidget):
 
         self.lbl_status_headline.setText(theme["title"])
         self.lbl_status_headline.setStyleSheet(
-            "color: #FFFFFF; font-size: 25px; font-weight: 900; letter-spacing: 0.6px; background: transparent;"
+            "color: #FFFFFF; font-size: 27px; font-weight: 900; letter-spacing: 0.6px; background: transparent;"
         )
 
-        nome = record.get("nome_responsavel")
-        unidade = record.get("unidade_bloco")
-        modelo = record.get("modelo_cor")
-        if nome:
-            parts = [nome]
-            if unidade:
-                parts.append(f"Unidade: {unidade}")
-            if modelo:
-                parts.append(modelo)
-            if status == ACCESS_STATUS_EXPIRADO:
-                parts.append("PERÍODO DE ACESSO VENCIDO")
-            detail_text = "  •  ".join(parts)
-        else:
-            detail_text = "Placa não localizada no cadastro local — confirme na portaria ou cadastre agora."
-
-        self.lbl_status_details.setText(detail_text)
         self.lbl_plate_badge.setText(plate_disp or "SEM PLACA")
         self.lbl_plate_badge.setStyleSheet(
             f"background-color: #F8FAFC; color: #0F172A; border: 2px solid {theme['border']}; "
             "border-top: 11px solid #1E40AF; border-radius: 8px; "
-            "font-family: Consolas, 'Segoe UI', monospace; font-size: 26px; font-weight: 900; letter-spacing: 2px;"
+            "font-family: Consolas, 'Segoe UI', monospace; font-size: 28px; font-weight: 900; letter-spacing: 2px;"
         )
 
-        # Botão rápido de cadastro quando a placa não está no banco
-        if status == ACCESS_STATUS_NAO_CADASTRADO and len(plate_raw) == 7:
-            self._last_unregistered_plate = plate_raw
-            self.btn_quick_register.setText(f"➕  Cadastrar Esta Placa Agora ({plate_disp})")
-            self.btn_quick_register.setVisible(True)
+        nome = (record.get("nome_responsavel") or "").strip()
+        unidade = (record.get("unidade_bloco") or "").strip()
+        modelo = (record.get("modelo_cor") or "").strip()
+
+        if nome:
+            # Exibe os 3 blocos gigantes de destaque (Morador | Casa/Unidade | Carro)
+            self.lbl_val_resident.setText(nome.upper())
+            self.lbl_val_unit.setText(unidade.upper() if unidade else "NÃO INFORMADA")
+            self.lbl_val_unit.setStyleSheet(
+                f"color: {theme['accent']}; font-size: 20px; font-weight: 900; background: transparent; border: none;"
+            )
+            self.lbl_val_car.setText(modelo.upper() if modelo else "NÃO INFORMADO")
+            self.info_blocks_container.setVisible(True)
+
+            if status == ACCESS_STATUS_EXPIRADO:
+                self.lbl_status_details.setText("⚠ Validade de acesso deste visitante está vencida.")
+                self.btn_quick_register.setVisible(False)
+                self.footer_alert_row.setVisible(True)
+            else:
+                self.btn_quick_register.setVisible(False)
+                self.footer_alert_row.setVisible(False)
         else:
-            self._last_unregistered_plate = ""
-            self.btn_quick_register.setVisible(False)
+            # Placa não cadastrada: oculta os 3 blocos e mostra alerta claro + botão rápido de cadastro
+            self.info_blocks_container.setVisible(False)
+            self.footer_alert_row.setVisible(True)
+            self.lbl_status_details.setText(
+                "Veículo não localizado na base local — confirme na portaria ou cadastre agora em 1 clique."
+            )
+            if status == ACCESS_STATUS_NAO_CADASTRADO and len(plate_raw) == 7:
+                self._last_unregistered_plate = plate_raw
+                self.btn_quick_register.setText(f"➕  Cadastrar Esta Placa Agora ({plate_disp})")
+                self.btn_quick_register.setVisible(True)
+            else:
+                self._last_unregistered_plate = ""
+                self.btn_quick_register.setVisible(False)
 
         if play_sound:
             self.sound.play_for_status(status)
@@ -955,76 +1008,6 @@ class MonitorTab(QWidget):
     def _on_quick_register_clicked(self) -> None:
         if self._last_unregistered_plate:
             self.quick_register_requested.emit(self._last_unregistered_plate)
-
-    # =========================================================================
-    # SIMULAÇÃO MANUAL (MANTIDA PARA TESTES RÁPIDOS)
-    # =========================================================================
-
-    def _process_simulated_plate(self, plate: str, forced_status: Optional[str] = None) -> None:
-        plate_norm = normalize_plate(plate)
-        if len(plate_norm) < 7:
-            QMessageBox.warning(
-                self,
-                "Placa Inválida",
-                "Informe uma placa válida com 7 caracteres (ex: ABC1D23 ou ABC1234).",
-            )
-            return
-
-        status, vehicle = self.db.evaluate_plate_access(plate_norm)
-        if forced_status:
-            status = forced_status
-
-        camera_name = self._active_roi["nome"] if self._active_roi else "Câmera Principal (Simulação)"
-        img_path = self._worker.save_current_snapshot(plate_norm) if self._worker else None
-
-        record = self.db.log_access(
-            placa=plate_norm,
-            status_acesso=status,
-            camera_nome=camera_name,
-            veiculo_id=vehicle["id"] if vehicle else None,
-            imagem_path=img_path,
-        )
-        if forced_status == ACCESS_STATUS_LIBERADO_MORADOR and not record.get("nome_responsavel"):
-            record["nome_responsavel"] = "Morador Demonstração"
-            record["unidade_bloco"] = "Bloco A • Apto 101"
-            record["modelo_cor"] = "Simulação Manual"
-
-        self._render_status_card(record, play_sound=True)
-        self.refresh_recent_passages()
-        self.access_logged.emit()
-
-    def _simulate_typed_plate(self) -> None:
-        typed = self.input_sim_plate.text().strip()
-        if not typed:
-            self._simulate_resident()
-            return
-        self._process_simulated_plate(typed)
-        self.input_sim_plate.clear()
-
-    def _simulate_resident(self) -> None:
-        residents = self.db.search_vehicles(perfil="MORADOR")
-        if residents:
-            self._process_simulated_plate(random.choice(residents)["placa"])
-        else:
-            self._process_simulated_plate("NXS1V26", forced_status=ACCESS_STATUS_LIBERADO_MORADOR)
-
-    def _simulate_unregistered(self) -> None:
-        letters = "ABCDEFGHJKLMNPRSTUVWXYZ"
-        while True:
-            cand = (
-                f"{random.choice(letters)}{random.choice(letters)}{random.choice(letters)}"
-                f"{random.randint(0,9)}{random.choice(letters)}{random.randint(10,99)}"
-            )
-            if not self.db.get_vehicle_by_plate(cand):
-                break
-        self._process_simulated_plate(cand)
-
-    def _simulate_blocked(self) -> None:
-        blocked = self.db.search_vehicles(perfil="BLOQUEADO")
-        if blocked:
-            self._process_simulated_plate(random.choice(blocked)["placa"])
-        else:
-            self._process_simulated_plate("BLK9X99", forced_status=ACCESS_STATUS_BLOQUEADO)
 
     # =========================================================================
     # LISTA LATERAL DE ÚLTIMAS PASSAGENS & KPIs
