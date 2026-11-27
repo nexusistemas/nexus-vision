@@ -463,53 +463,39 @@ class DatabaseManager:
         return ACCESS_STATUS_LIBERADO_MORADOR, vehicle
 
     # =========================================================================
-    # IMPORTAÇÃO / EXPORTAÇÃO CSV DE MORADORES E VEÍCULOS
+    # IMPORTAÇÃO / EXPORTAÇÃO EXCEL (.xlsx) E CSV DE MORADORES E VEÍCULOS
     # =========================================================================
 
-    def import_vehicles_csv(self, csv_path: str | Path) -> dict[str, Any]:
-        """
-        Importa veículos de um arquivo CSV (UTF-8 / UTF-8-SIG / Latin-1, delimitador ',' ou ';').
-        Faz upsert por placa normalizada.
-        """
-        path = Path(csv_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Arquivo CSV não encontrado: {path}")
-
-        raw_text = None
-        for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
-            try:
-                raw_text = path.read_text(encoding=encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        if raw_text is None:
-            raise ValueError("Não foi possível decodificar o arquivo CSV.")
-
-        lines = [ln for ln in raw_text.splitlines() if ln.strip()]
-        if not lines:
-            return {"inserted": 0, "updated": 0, "skipped": 0, "errors": ["Arquivo CSV vazio."]}
-
-        delimiter = ";" if lines[0].count(";") >= lines[0].count(",") else ","
-        reader = csv.DictReader(lines, delimiter=delimiter)
+    def _upsert_imported_rows(
+        self, rows: list[tuple[int, dict[str, Any]]]
+    ) -> dict[str, Any]:
+        """Processa e grava em lote linhas normalizadas vindas de Excel (.xlsx) ou CSV."""
+        if not rows:
+            return {"inserted": 0, "updated": 0, "skipped": 0, "errors": ["Arquivo sem linhas de dados."]}
 
         inserted = 0
         updated = 0
         skipped = 0
         errors: list[str] = []
 
+        def _norm_key(key: Any) -> str:
+            text = str(key or "").strip().lower()
+            for a, b in (("á", "a"), ("à", "a"), ("ã", "a"), ("â", "a"), ("é", "e"), ("ê", "e"), ("í", "i"), ("ó", "o"), ("ô", "o"), ("õ", "o"), ("ú", "u"), ("ç", "c")):
+                text = text.replace(a, b)
+            return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+
         def _get_field(row_norm: dict[str, str], aliases: tuple[str, ...]) -> str:
             for alias in aliases:
-                if alias in row_norm and row_norm[alias] is not None:
-                    val = row_norm[alias].strip()
-                    if val:
-                        return val
+                if alias in row_norm and row_norm[alias]:
+                    return row_norm[alias]
             return ""
 
         with self._lock:
-            for idx, raw_row in enumerate(reader, start=2):
+            for idx, raw_row in rows:
                 row_norm = {
-                    (k or "").strip().lower().replace(" ", "_"): (v or "").strip()
+                    _norm_key(k): ("" if v is None else str(v).strip())
                     for k, v in raw_row.items()
+                    if _norm_key(k)
                 }
                 placa_raw = _get_field(row_norm, ("placa", "plate", "placa_veiculo"))
                 placa = normalize_plate(placa_raw)
@@ -525,6 +511,17 @@ class DatabaseManager:
                     row_norm,
                     ("modelo_cor", "modelo", "veiculo", "carro", "marca_modelo"),
                 )
+                cor = _get_field(row_norm, ("cor", "color"))
+                marca = _get_field(row_norm, ("marca", "fabricante"))
+                if modelo and (cor or marca) and "modelo_cor" not in row_norm:
+                    parts = [p for p in (marca, modelo, cor) if p]
+                    # Evita duplicação óbvia (ex: HONDA + HONDA)
+                    dedup: list[str] = []
+                    for p in parts:
+                        if not any(p.lower() in ex.lower() for ex in dedup):
+                            dedup.append(p)
+                    modelo = " - ".join(dedup)
+
                 perfil_raw = _get_field(row_norm, ("perfil", "tipo", "categoria", "status")).upper()
                 validade = _get_field(row_norm, ("validade_ate", "validade", "expira_em")) or None
 
@@ -577,6 +574,75 @@ class DatabaseManager:
             "errors": errors[:20],
         }
 
+    def import_vehicles_csv(self, csv_path: str | Path) -> dict[str, Any]:
+        """
+        Importa veículos de um arquivo CSV (UTF-8 / UTF-8-SIG / Latin-1, delimitador ',' ou ';').
+        Faz upsert por placa normalizada.
+        """
+        path = Path(csv_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Arquivo CSV não encontrado: {path}")
+
+        raw_text = None
+        for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+            try:
+                raw_text = path.read_text(encoding=encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if raw_text is None:
+            raise ValueError("Não foi possível decodificar o arquivo CSV.")
+
+        lines = [ln for ln in raw_text.splitlines() if ln.strip()]
+        if not lines:
+            return {"inserted": 0, "updated": 0, "skipped": 0, "errors": ["Arquivo CSV vazio."]}
+
+        delimiter = ";" if lines[0].count(";") >= lines[0].count(",") else ","
+        reader = csv.DictReader(lines, delimiter=delimiter)
+        rows = [(idx, dict(raw_row)) for idx, raw_row in enumerate(reader, start=2)]
+        return self._upsert_imported_rows(rows)
+
+    def import_vehicles_excel(self, xlsx_path: str | Path) -> dict[str, Any]:
+        """Importa veículos da primeira aba de uma planilha Excel (.xlsx / .xlsm)."""
+        import openpyxl
+
+        path = Path(xlsx_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Planilha Excel não encontrada: {path}")
+
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        try:
+            ws = wb.active
+            if ws is None:
+                return {"inserted": 0, "updated": 0, "skipped": 0, "errors": ["Planilha Excel sem abas."]}
+
+            row_iter = ws.iter_rows(values_only=True)
+            header_row = next(row_iter, None)
+            if not header_row:
+                return {"inserted": 0, "updated": 0, "skipped": 0, "errors": ["Planilha Excel vazia."]}
+
+            headers = [str(h).strip() if h is not None else "" for h in header_row]
+            rows: list[tuple[int, dict[str, Any]]] = []
+            for idx, values in enumerate(row_iter, start=2):
+                if values is None or all(v is None or str(v).strip() == "" for v in values):
+                    continue
+                row_dict = {
+                    headers[c]: (values[c] if c < len(values) else None)
+                    for c in range(len(headers))
+                    if headers[c]
+                }
+                rows.append((idx, row_dict))
+            return self._upsert_imported_rows(rows)
+        finally:
+            wb.close()
+
+    def import_vehicles_file(self, file_path: str | Path) -> dict[str, Any]:
+        """Importa automaticamente arquivo Excel (.xlsx/.xlsm) ou CSV (.csv)."""
+        path = Path(file_path)
+        if path.suffix.lower() in {".xlsx", ".xlsm"}:
+            return self.import_vehicles_excel(path)
+        return self.import_vehicles_csv(path)
+
     def export_vehicles_csv(self, csv_path: str | Path) -> int:
         """Exporta todos os veículos cadastrados em CSV UTF-8 com BOM (compatível com Excel)."""
         vehicles = self.search_vehicles()
@@ -597,6 +663,58 @@ class DatabaseManager:
             for v in vehicles:
                 writer.writerow({h: v.get(h) or "" for h in headers})
         return len(vehicles)
+
+    def export_vehicles_excel(self, xlsx_path: str | Path) -> int:
+        """Exporta todos os veículos cadastrados para planilha Excel (.xlsx) formatada."""
+        import openpyxl
+        from openpyxl.styles import Alignment, Font, PatternFill
+
+        vehicles = self.search_vehicles()
+        path = Path(xlsx_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Veiculos"
+
+        headers = [
+            "placa",
+            "nome_responsavel",
+            "unidade_bloco",
+            "modelo_cor",
+            "perfil",
+            "validade_ate",
+            "criado_em",
+        ]
+        ws.append(headers)
+
+        header_fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True)
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        for v in vehicles:
+            ws.append([v.get(h) or "" for h in headers])
+
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:G{max(1, len(vehicles) + 1)}"
+
+        col_widths = {"A": 14, "B": 30, "C": 20, "D": 32, "E": 14, "F": 16, "G": 22}
+        for col_letter, width in col_widths.items():
+            ws.column_dimensions[col_letter].width = width
+
+        wb.save(path)
+        return len(vehicles)
+
+    def export_vehicles_file(self, file_path: str | Path) -> int:
+        """Exporta automaticamente para Excel (.xlsx) ou CSV (.csv) conforme a extensão."""
+        path = Path(file_path)
+        if path.suffix.lower() in {".xlsx", ".xlsm"}:
+            return self.export_vehicles_excel(path)
+        return self.export_vehicles_csv(path)
 
     # =========================================================================
     # 3. HISTÓRICO DE ACESSOS (historico_acessos)

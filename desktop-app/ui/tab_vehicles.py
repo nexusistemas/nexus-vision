@@ -173,11 +173,13 @@ class VehiclesTab(QWidget):
         self.cmb_filter_profile.setFixedWidth(150)
         self.cmb_filter_profile.currentIndexChanged.connect(self.refresh_table)
 
-        self.btn_import_csv = QPushButton("⬆  Importar CSV")
+        self.btn_import_csv = QPushButton("⬆  Importar Excel / CSV")
         self.btn_import_csv.setProperty("variant", "primary")
+        self.btn_import_csv.setToolTip("Importa planilhas Excel (.xlsx) ou arquivos CSV (.csv)")
         self.btn_import_csv.clicked.connect(self._import_csv)
 
-        self.btn_export_csv = QPushButton("⬇  Exportar CSV")
+        self.btn_export_csv = QPushButton("⬇  Exportar Excel / CSV")
+        self.btn_export_csv.setToolTip("Exporta todos os veículos para Excel (.xlsx) ou CSV (.csv)")
         self.btn_export_csv.clicked.connect(self._export_csv)
 
         self.btn_cloud_backup = QPushButton("☁  Backup Nuvem")
@@ -428,16 +430,16 @@ class VehiclesTab(QWidget):
     def _import_csv(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Importar Moradores / Veículos (CSV)",
+            "Importar Moradores / Veículos (Excel ou CSV)",
             str(Path.home()),
-            "Arquivos CSV (*.csv);;Todos os Arquivos (*.*)",
+            "Planilhas Excel e CSV (*.xlsx *.xlsm *.csv);;Planilha Excel (*.xlsx *.xlsm);;Arquivos CSV (*.csv);;Todos os Arquivos (*.*)",
         )
         if not file_path:
             return
         try:
-            summary = self.db.import_vehicles_csv(file_path)
+            summary = self.db.import_vehicles_file(file_path)
         except Exception as exc:
-            QMessageBox.critical(self, "Erro na Importação CSV", str(exc))
+            QMessageBox.critical(self, "Erro na Importação", str(exc))
             return
 
         self.refresh_table()
@@ -451,23 +453,25 @@ class VehiclesTab(QWidget):
         )
         if summary["errors"]:
             msg += "\n\nAvisos:\n" + "\n".join(summary["errors"][:6])
-        QMessageBox.information(self, "Resultado da Importação CSV", msg)
+        QMessageBox.information(self, "Resultado da Importação", msg)
 
     def _export_csv(self) -> None:
-        file_path, _ = QFileDialog.getSaveFileName(
+        file_path, selected_filter = QFileDialog.getSaveFileName(
             self,
-            "Exportar Cadastro de Veículos (CSV)",
-            str(Path.home() / "nexus_vision_veiculos.csv"),
-            "Arquivos CSV (*.csv)",
+            "Exportar Cadastro de Veículos (Excel ou CSV)",
+            str(Path.home() / "nexus_vision_veiculos.xlsx"),
+            "Planilha Excel (*.xlsx);;Arquivo CSV (*.csv)",
         )
         if not file_path:
             return
+        if "." not in Path(file_path).name:
+            file_path += ".csv" if "CSV" in selected_filter else ".xlsx"
         try:
-            total = self.db.export_vehicles_csv(file_path)
+            total = self.db.export_vehicles_file(file_path)
             QMessageBox.information(
                 self,
                 "Exportação Concluída",
                 f"{total} veículo(s) exportado(s) com sucesso para:\n{file_path}",
             )
         except Exception as exc:
-            QMessageBox.critical(self, "Erro ao Exportar CSV", str(exc))
+            QMessageBox.critical(self, "Erro ao Exportar", str(exc))

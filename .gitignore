@@ -60,9 +60,11 @@ desktop-app/installer/Output/
 out/
 release/
 
-# License Local Cache
+# License Local Cache & Client Spreadsheets (LGPD)
 license_cache.dat
 *.dat
+clientes/
+Condominio_*.xlsx
 
 # Node / Web Portal (Etapas futuras)
 node_modules/

@@ -201,6 +201,10 @@ def step_3_build_pyinstaller(ico_path: Path) -> Path:
         "yaml",
         "--hidden-import",
         "onnxruntime",
+        "--hidden-import",
+        "openpyxl",
+        "--hidden-import",
+        "et_xmlfile",
         # Exclui módulos Qt gigantes não utilizados (reduz >150 MB do instalador!)
         "--exclude-module",
         "PySide6.QtWebEngineCore",
